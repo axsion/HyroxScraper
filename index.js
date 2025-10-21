@@ -7,67 +7,77 @@ const app = express();
 app.use(cors());
 
 const PORT = process.env.PORT || 3000;
-const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN;
-const BROWSERLESS_URL = `https://production-sfo.browserless.io/content?token=${BROWSERLESS_TOKEN}`;
 
-// 1️⃣ Fetch fully rendered HTML from Browserless
-async function renderPageHtml(url) {
-  const response = await fetch(BROWSERLESS_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url }),
-  });
-
-  if (!response.ok) throw new Error(`Browserless render failed: ${response.status}`);
-  return await response.text();
-}
-
-// 2️⃣ Parse HTML with Cheerio to extract HYROX results
-function extractResults(html) {
+// Helper function to scrape HYRESULT
+async function scrapeHyResult(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch: ${res.statusText}`);
+  const html = await res.text();
   const $ = cheerio.load(html);
-  const results = [];
 
-  // Look for rows in the HYROX results table
-  $("table tbody tr").each((_, row) => {
+  const results = [];
+  $("table tbody tr").each((i, row) => {
     const cols = $(row).find("td");
     const rank = $(cols[0]).text().trim();
     const name = $(cols[2]).text().trim();
-    const time = $(cols[7]).text().trim();
+    const time = $(cols[6]).text().trim();
 
     if (rank && name && time) {
       results.push({ rank, name, time });
     }
   });
 
-  // Return top 10 (you can change)
-  return results.slice(0, 10);
+  return results.slice(0, 3);
 }
 
-app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", message: "HYROX scraper running via Browserless" });
+app.get("/api/health", (_, res) => {
+  res.json({ status: "ok", source: "HYRESULT.com", version: "1.0" });
 });
 
+// ✅ Example: /api/scrape?event=toronto-2025
 app.get("/api/scrape", async (req, res) => {
   try {
-    const { eventUrl } = req.query;
-    if (!eventUrl) return res.status(400).json({ error: "Missing eventUrl query param" });
+    const event = req.query.event;
+    if (!event) return res.status(400).json({ error: "Missing ?event parameter" });
 
-    const html = await renderPageHtml(eventUrl);
-    const athletes = extractResults(html);
+    const categories = [
+      { gender: "men", group: "45-49" },
+      { gender: "men", group: "50-54" },
+      { gender: "men", group: "55-59" },
+      { gender: "men", group: "60-64" },
+      { gender: "men", group: "65-69" },
+      { gender: "men", group: "70" },
+      { gender: "women", group: "45-49" },
+      { gender: "women", group: "50-54" },
+      { gender: "women", group: "55-59" },
+      { gender: "women", group: "60-64" },
+      { gender: "women", group: "65-69" },
+      { gender: "women", group: "70" },
+    ];
+
+    const allData = [];
+
+    for (const cat of categories) {
+      const url = `https://www.hyresult.com/ranking/s8-2025-${event}-hyrox-${cat.gender}?ag=${cat.group}`;
+      console.log(`🔍 Scraping ${url}`);
+      try {
+        const athletes = await scrapeHyResult(url);
+        allData.push({
+          category: `${cat.gender.toUpperCase()} ${cat.group}`,
+          athletes,
+        });
+      } catch (err) {
+        console.warn(`⚠️ Failed for ${cat.gender} ${cat.group}: ${err.message}`);
+      }
+    }
 
     res.json({
-      eventName: "HYROX Event",
-      categories: [
-        {
-          category: "Filtered Page",
-          athletes,
-        },
-      ],
+      eventName: `HYROX ${event}`,
+      categories: allData,
     });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
-app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ HYRESULT scraper running on port ${PORT}`));
