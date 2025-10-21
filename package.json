@@ -1,5 +1,5 @@
 {
-  "name": "hyrox-scraper",
+  "name": "hyroxscraper",
   "version": "1.0.0",
   "type": "module",
   "main": "index.js",
@@ -7,7 +7,8 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "playwright": "^1.46.0"
   }
 }
