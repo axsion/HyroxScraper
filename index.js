@@ -1,73 +1,68 @@
 import express from "express";
 import cors from "cors";
 import fetch from "node-fetch";
+import * as cheerio from "cheerio";
 
 const app = express();
 app.use(cors());
 
 const PORT = process.env.PORT || 3000;
-
-// 🧠 Put your Browserless token in Render environment variables
-//   Key: BROWSERLESS_TOKEN
-//   Value: <your-browserless-token>
-
 const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN;
 const BROWSERLESS_URL = `https://production-sfo.browserless.io/content?token=${BROWSERLESS_TOKEN}`;
 
-// Helper: render page HTML via Browserless cloud
+// 1️⃣ Fetch fully rendered HTML from Browserless
 async function renderPageHtml(url) {
   const response = await fetch(BROWSERLESS_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ url }),
   });
+
   if (!response.ok) throw new Error(`Browserless render failed: ${response.status}`);
   return await response.text();
 }
 
-// Simplified parser (placeholder)
-function extractTop3FromHtml(html) {
-  const rows = [];
-  const regex = /<td[^>]*>(\d+)<\/td>\s*<td[^>]*>(.*?)<\/td>\s*<td[^>]*>(.*?)<\/td>/gi;
-  let m;
-  while ((m = regex.exec(html)) !== null && rows.length < 3) {
-    rows.push({ rank: m[1], name: m[2].replace(/<[^>]+>/g, ""), time: m[3] });
-  }
-  return rows;
+// 2️⃣ Parse HTML with Cheerio to extract HYROX results
+function extractResults(html) {
+  const $ = cheerio.load(html);
+  const results = [];
+
+  // Look for rows in the HYROX results table
+  $("table tbody tr").each((_, row) => {
+    const cols = $(row).find("td");
+    const rank = $(cols[0]).text().trim();
+    const name = $(cols[2]).text().trim();
+    const time = $(cols[7]).text().trim();
+
+    if (rank && name && time) {
+      results.push({ rank, name, time });
+    }
+  });
+
+  // Return top 10 (you can change)
+  return results.slice(0, 10);
 }
 
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", message: "HYROX scraper running via Browserless" });
 });
 
-app.get("/api/sample", (req, res) => {
-  res.json({
-    eventName: "2025 HYROX Sample Event",
-    categories: [
-      {
-        category: "Men 45-49",
-        athletes: [
-          { rank: 1, name: "John Doe", time: "1:05:23" },
-          { rank: 2, name: "Mark Smith", time: "1:06:45" },
-          { rank: 3, name: "David Wilson", time: "1:08:12" },
-        ],
-      },
-    ],
-  });
-});
-
-// ✅ Main endpoint
 app.get("/api/scrape", async (req, res) => {
   try {
     const { eventUrl } = req.query;
     if (!eventUrl) return res.status(400).json({ error: "Missing eventUrl query param" });
 
     const html = await renderPageHtml(eventUrl);
-    const top3 = extractTop3FromHtml(html);
+    const athletes = extractResults(html);
 
     res.json({
       eventName: "HYROX Event",
-      categories: [{ category: "Filtered Page", athletes: top3 }],
+      categories: [
+        {
+          category: "Filtered Page",
+          athletes,
+        },
+      ],
     });
   } catch (err) {
     console.error(err);
