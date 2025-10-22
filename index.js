@@ -72,6 +72,7 @@ app.get("/api/scrape", async (req, res) => {
 });
 
 // --- Multi-event (season) scraper
+// --- Multi-event (season) scraper with podiums
 app.get("/api/scrape-season", async (req, res) => {
   let browser;
   const logs = [];
@@ -87,35 +88,112 @@ app.get("/api/scrape-season", async (req, res) => {
 
     log("🔍 Visiting past events page...");
     await page.goto("https://www.hyresult.com/events?tab=past", {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
       timeout: 0
     });
 
-    // Wait for the spinner to finish loading
+    // Wait for table container (even if empty)
+    await page.waitForSelector(".ant-table-tbody", { timeout: 20000 });
+    log("✅ Table container detected");
+
+    // Try to wait for spinner to finish
     try {
-      await page.waitForSelector(".ant-spin", { state: "visible", timeout: 10000 });
-      await page.waitForSelector(".ant-spin", { state: "hidden", timeout: 20000 });
+      await page.waitForSelector(".ant-spin", { state: "visible", timeout: 5000 });
+      await page.waitForSelector(".ant-spin", { state: "hidden", timeout: 15000 });
       log("✅ Spinner finished loading");
     } catch {
-      log("⚠️ No spinner detected, continuing...");
+      log("⚠️ No spinner detected or finished instantly");
     }
 
-    // Wait until at least one ranking link is visible
-    const found = await page.waitForFunction(() => {
-      return document.querySelectorAll(".ant-table-tbody tr a[href*='/ranking/']").length > 0;
-    }, { timeout: 30000 });
-
-    if (!found) throw new Error("No event links found after waiting");
-
-    const events = await page.evaluate(() => {
-      const rows = Array.from(document.querySelectorAll(".ant-table-tbody tr"));
-      return rows.slice(0, 5).map(row => {
-        const linkEl = row.querySelector("a[href*='/ranking/']");
-        const name = row.querySelector("a")?.innerText.trim();
-        const href = linkEl ? linkEl.href : null;
-        return href && name ? { name, href } : null;
-      }).filter(Boolean);
+    // Auto-scroll to trigger lazy loading
+    log("⬇️ Scrolling through page to trigger full load...");
+    await page.evaluate(async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      let lastHeight = 0;
+      for (let i = 0; i < 10; i++) {
+        window.scrollTo(0, document.body.scrollHeight);
+        await sleep(1000);
+        const newHeight = document.body.scrollHeight;
+        if (newHeight === lastHeight) break;
+        lastHeight = newHeight;
+      }
     });
+
+    // Wait for rows OR fallback links
+    await page.waitForFunction(() => {
+      return (
+        document.querySelectorAll(".ant-table-tbody tr a[href*='/ranking/']").length > 0 ||
+        document.querySelectorAll("a[href*='/ranking/']").length > 0
+      );
+    }, { timeout: 60000 });
+
+    // Extract up to 5 recent events
+    const events = await page.evaluate(() => {
+      const linkNodes = Array.from(document.querySelectorAll("a[href*='/ranking/']"));
+      const seen = new Set();
+      const clean = linkNodes
+        .map(a => {
+          const name = a.innerText.trim();
+          const href = a.href;
+          if (!name || !href || seen.has(href)) return null;
+          seen.add(href);
+          return { name, href };
+        })
+        .filter(Boolean)
+        .slice(0, 5);
+      return clean;
+    });
+
+    log(`📅 Found ${events.length} events, fetching podiums...`);
+    if (events.length === 0) throw new Error("No events extracted after scroll");
+
+    const podiums = [];
+
+    for (const ev of events) {
+      try {
+        log(`🏁 Scraping podium for ${ev.name}`);
+        const pageEvent = await browser.newPage();
+        await pageEvent.goto(ev.href + "-men?ag=45-49", {
+          waitUntil: "domcontentloaded",
+          timeout: 0
+        });
+        await pageEvent.waitForSelector("table tbody tr", { timeout: 15000 });
+
+        const eventName = await pageEvent.title();
+        const athletes = await pageEvent.evaluate(() => {
+          const rows = Array.from(document.querySelectorAll("table tbody tr"));
+          return rows.slice(0, 3).map(row => {
+            const cells = row.querySelectorAll("td");
+            return {
+              rank: cells[1]?.innerText.trim(),
+              name: cells[3]?.innerText.trim(),
+              ageGroup: cells[4]?.innerText.trim(),
+              time: cells[5]?.innerText.trim()
+            };
+          });
+        });
+
+        podiums.push({
+          event: ev.name,
+          url: ev.href,
+          podium: athletes
+        });
+
+        await pageEvent.close();
+      } catch (e) {
+        log(`⚠️ Failed ${ev.name}: ${e.message}`);
+      }
+    }
+
+    res.json({ season: "HYROX Archive", events: podiums, log: logs });
+  } catch (err) {
+    log(`❌ Fatal error: ${err.message}`);
+    res.status(500).json({ error: err.message, log: logs });
+  } finally {
+    if (browser) await browser.close();
+  }
+});
+
 
     log(`📅 Found ${events.length} events`);
     res.json({ season: "HYROX Archive", events, log: logs });
