@@ -1,6 +1,6 @@
 import express from "express";
-import chromium from "chromium";
 import puppeteer from "puppeteer-core";
+import chromium from "chromium";
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -15,12 +15,11 @@ app.get("/api/scrape", async (req, res) => {
   let browser;
   try {
     const pathToChrome = chromium.path;
-
     console.log("✅ Using Chromium binary at:", pathToChrome);
 
     browser = await puppeteer.launch({
       headless: true,
-      executablePath: pathToChrome, // ✅ direct path to Chromium
+      executablePath: pathToChrome,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
@@ -32,7 +31,6 @@ app.get("/api/scrape", async (req, res) => {
 
     const page = await browser.newPage();
     await page.goto(eventUrl, { waitUntil: "networkidle2", timeout: 0 });
-
     await page.waitForSelector("table tbody tr");
 
     const athletes = await page.evaluate(() => {
