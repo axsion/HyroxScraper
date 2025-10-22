@@ -6,12 +6,16 @@ const PORT = process.env.PORT || 10000;
 
 app.get("/api/scrape", async (req, res) => {
   const eventUrl = req.query.eventUrl || "https://www.hyresult.com/ranking/s8-2025-toronto-hyrox-men?ag=45-49";
-
   console.log(`🔍 Opening ${eventUrl}`);
+
   let browser;
   try {
+    // Force Puppeteer to use its local cache directory
+    process.env.PUPPETEER_CACHE_DIR = "./.puppeteer-cache";
+
     browser = await puppeteer.launch({
-      headless: "new", // modern headless mode
+      channel: "chromium", // ✅ use the lightweight Chromium build
+      headless: true,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
