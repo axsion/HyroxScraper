@@ -6,131 +6,106 @@ import { chromium } from "playwright";
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// --- Directories for saved data
 const dataDir = path.join(process.cwd(), "data");
-const dataFile = path.join(dataDir, "last-run.json");
-if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir);
+const listFile = path.join(dataDir, "events-list.json");
+const resultFile = path.join(dataDir, "last-run.json");
+if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-process.on("unhandledRejection", err => console.error("🚨 Unhandled Rejection:", err));
+const logWrap = (logs, msg) => {
+  const line = `${new Date().toISOString().split("T")[1].split(".")[0]} - ${msg}`;
+  console.log(line);
+  logs.push(line);
+};
 
+// -----------------------------------------------------------------------------
+// 🩺 Health Check
+// -----------------------------------------------------------------------------
 app.get("/api/health", (_, res) => res.json({ ok: true }));
 
-// -----------------------------
-// 🏁 SCRAPE INDIVIDUAL EVENT
-// -----------------------------
-app.get("/api/scrape", async (req, res) => {
-  const eventUrl = req.query.url;
-  if (!eventUrl) return res.status(400).json({ error: "Missing ?url parameter" });
-
+// -----------------------------------------------------------------------------
+// 🧭 STEP 1 – Collect all event URLs and save to /data/events-list.json
+// -----------------------------------------------------------------------------
+app.get("/api/scrape-event-list", async (_, res) => {
   let browser;
   const logs = [];
-  const log = msg => {
-    console.log(msg);
-    logs.push(`${new Date().toISOString().split("T")[1].split(".")[0]} - ${msg}`);
-  };
 
   try {
-    log("🚀 Launching browser...");
+    logWrap(logs, "🚀 Launching browser...");
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
-    log(`🔍 Opening ${eventUrl}`);
+    await page.setViewportSize({ width: 1400, height: 900 });
 
-    await page.goto(eventUrl, { waitUntil: "domcontentloaded", timeout: 0 });
-    await page.waitForSelector("table tbody tr", { timeout: 20000 });
-
-    const eventName = await page.title();
-    const athletes = await page.evaluate(() => {
-      const rows = Array.from(document.querySelectorAll("table tbody tr"));
-      return rows.slice(0, 3).map(row => {
-        const cells = row.querySelectorAll("td");
-        return {
-          rank: cells[1]?.innerText.trim(),
-          name: cells[3]?.innerText.trim(),
-          ageGroup: cells[4]?.innerText.trim(),
-          time: cells[5]?.innerText.trim()
-        };
-      });
+    logWrap(logs, "🔍 Visiting past events page...");
+    await page.goto("https://www.hyresult.com/events?tab=past", {
+      waitUntil: "domcontentloaded",
+      timeout: 0
     });
 
-    res.json({ eventName, podium: athletes, log: logs });
+    // Smooth scroll to load all lazy content
+    logWrap(logs, "⬇️ Scrolling until end of page...");
+    await page.evaluate(async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      let prevHeight = 0;
+      for (let i = 0; i < 30; i++) {
+        window.scrollTo(0, document.body.scrollHeight);
+        await sleep(1000);
+        const height = document.body.scrollHeight;
+        if (height === prevHeight) break;
+        prevHeight = height;
+      }
+    });
+
+    // Collect ranking links
+    const events = await page.evaluate(() => {
+      const anchors = Array.from(document.querySelectorAll("a[href*='/ranking/']"));
+      const seen = new Set();
+      return anchors
+        .map(a => ({
+          name: a.textContent.trim(),
+          href: a.href
+        }))
+        .filter(e => e.name && e.href && !seen.has(e.href) && seen.add(e.href));
+    });
+
+    if (!events.length) throw new Error("No ranking links found on page.");
+
+    fs.writeFileSync(listFile, JSON.stringify(events, null, 2));
+    logWrap(logs, `💾 Saved ${events.length} events to ${listFile}`);
+
+    res.json({ ok: true, count: events.length, events, log: logs });
   } catch (err) {
-    log(`❌ Error: ${err.message}`);
+    logWrap(logs, `❌ Error: ${err.message}`);
     res.status(500).json({ error: err.message, log: logs });
   } finally {
     if (browser) await browser.close();
   }
 });
 
-// -----------------------------
-// 🌍 SCRAPE FULL SEASON (API-BASED)
-// -----------------------------
-app.get("/api/scrape-season", async (req, res) => {
+// -----------------------------------------------------------------------------
+// 🏁 STEP 2 – Load events-list.json and scrape podiums for each event
+// -----------------------------------------------------------------------------
+app.get("/api/scrape-from-list", async (_, res) => {
+  if (!fs.existsSync(listFile))
+    return res.status(404).json({ error: "Run /api/scrape-event-list first." });
+
+  const events = JSON.parse(fs.readFileSync(listFile, "utf8"));
   let browser;
   const logs = [];
-  const log = msg => {
-    console.log(msg);
-    logs.push(`${new Date().toISOString().split("T")[1].split(".")[0]} - ${msg}`);
-  };
+  const results = [];
 
   try {
-    log("🚀 Launching browser...");
+    logWrap(logs, "🚀 Launching browser...");
     browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage();
 
-    let apiResponse = null;
-
-    // Intercept API JSON data when page loads
-    page.on("response", async response => {
-      const url = response.url();
-      if (url.includes("/api/event/list?")) {
-        try {
-          const json = await response.json();
-          apiResponse = json;
-        } catch {}
-      }
-    });
-
-    log("🔍 Navigating to HYROX past events...");
-    await page.goto("https://www.hyresult.com/events?tab=past", {
-      waitUntil: "domcontentloaded",
-      timeout: 0
-    });
-
-    // Wait for network API to return data
-    let tries = 0;
-    while (!apiResponse && tries < 20) {
-      await page.waitForTimeout(1000);
-      tries++;
-    }
-
-    if (!apiResponse) throw new Error("Could not intercept events API.");
-
-    const events = apiResponse?.data?.records || [];
-    log(`📅 Found ${events.length} total events in API response`);
-
-    // Take only the 5 most recent completed events
-    const selected = events
-      .filter(e => e.status === 1) // completed
-      .slice(0, 5)
-      .map(e => ({
-        id: e.id,
-        name: e.name,
-        city: e.cityName,
-        date: e.startDate,
-        href: `https://www.hyresult.com/ranking/${e.slug}-men?ag=45-49`
-      }));
-
-    log(`✅ Extracted ${selected.length} recent events`);
-
-    const podiums = [];
-
-    for (const ev of selected) {
+    for (const [i, ev] of events.entries()) {
       try {
-        const pageEvent = await browser.newPage();
-        log(`🏁 Scraping ${ev.name}`);
-        await pageEvent.goto(ev.href, { waitUntil: "domcontentloaded", timeout: 0 });
-        await pageEvent.waitForSelector("table tbody tr", { timeout: 20000 });
+        const page = await browser.newPage();
+        logWrap(logs, `(${i + 1}/${events.length}) 🏁 Scraping ${ev.name}`);
+        await page.goto(ev.href, { waitUntil: "domcontentloaded", timeout: 0 });
+        await page.waitForSelector("table tbody tr", { timeout: 20000 });
 
-        const athletes = await pageEvent.evaluate(() => {
+        const podium = await page.evaluate(() => {
           const rows = Array.from(document.querySelectorAll("table tbody tr"));
           return rows.slice(0, 3).map(row => {
             const cells = row.querySelectorAll("td");
@@ -143,34 +118,39 @@ app.get("/api/scrape-season", async (req, res) => {
           });
         });
 
-        podiums.push({ event: ev.name, city: ev.city, date: ev.date, url: ev.href, podium: athletes });
-        await pageEvent.close();
+        results.push({ event: ev.name, url: ev.href, podium });
+        await page.close();
       } catch (e) {
-        log(`⚠️ Skipped ${ev.name}: ${e.message}`);
+        logWrap(logs, `⚠️ Failed ${ev.name}: ${e.message}`);
       }
     }
 
-    // Save to local file
-    const resultData = { date: new Date().toISOString(), events: podiums };
-    fs.writeFileSync(dataFile, JSON.stringify(resultData, null, 2));
-    log(`💾 Saved ${podiums.length} events to ${dataFile}`);
+    fs.writeFileSync(resultFile, JSON.stringify({ date: new Date().toISOString(), events: results }, null, 2));
+    logWrap(logs, `💾 Saved podiums for ${results.length} events`);
 
-    res.json({ saved: true, ...resultData, log: logs });
+    res.json({ ok: true, count: results.length, events: results, log: logs });
   } catch (err) {
-    log(`❌ Fatal: ${err.message}`);
+    logWrap(logs, `❌ Fatal: ${err.message}`);
     res.status(500).json({ error: err.message, log: logs });
   } finally {
     if (browser) await browser.close();
   }
 });
 
-// -----------------------------
-// 📂 VIEW LAST SAVED DATA
-// -----------------------------
-app.get("/api/last-run", (_, res) => {
-  if (!fs.existsSync(dataFile)) return res.status(404).json({ error: "No saved data found" });
-  const data = JSON.parse(fs.readFileSync(dataFile, "utf8"));
-  res.json(data);
+// -----------------------------------------------------------------------------
+// 📂 View saved files
+// -----------------------------------------------------------------------------
+app.get("/api/event-list", (_, res) => {
+  if (!fs.existsSync(listFile)) return res.status(404).json({ error: "No events-list found" });
+  res.json(JSON.parse(fs.readFileSync(listFile, "utf8")));
 });
 
-app.listen(PORT, () => console.log(`✅ HYROX Season Scraper running on port ${PORT}`));
+app.get("/api/last-run", (_, res) => {
+  if (!fs.existsSync(resultFile)) return res.status(404).json({ error: "No last-run data found" });
+  res.json(JSON.parse(fs.readFileSync(resultFile, "utf8")));
+});
+
+// -----------------------------------------------------------------------------
+// 🚀 Start server
+// -----------------------------------------------------------------------------
+app.listen(PORT, () => console.log(`✅ HYROX hybrid scraper running on port ${PORT}`));
