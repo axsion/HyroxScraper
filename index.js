@@ -6,13 +6,13 @@ import { chromium } from "playwright";
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Create data folder for storing runs
+// Paths for local data
 const dataDir = path.join(process.cwd(), "data");
 const listFile = path.join(dataDir, "events-list.json");
 const resultFile = path.join(dataDir, "last-run.json");
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-// Simple logger helper
+// --- Logger helper
 const logWrap = (logs, msg) => {
   const line = `${new Date().toISOString().split("T")[1].split(".")[0]} - ${msg}`;
   console.log(line);
@@ -22,13 +22,12 @@ const logWrap = (logs, msg) => {
 // --- Health check
 app.get("/api/health", (_, res) => res.json({ ok: true }));
 
-// =========================================================
-// STEP 1: Extract all HYROX event URLs from the “past events” page
-// =========================================================
+// ===================================================================
+// STEP 1 — Diagnostic version: Extract all event links (debug)
+// ===================================================================
 app.get("/api/scrape-event-list", async (_, res) => {
   let browser;
   const logs = [];
-
   try {
     logWrap(logs, "🚀 Launching browser...");
     browser = await chromium.launch({ headless: true });
@@ -41,41 +40,51 @@ app.get("/api/scrape-event-list", async (_, res) => {
       timeout: 0
     });
 
-    // Scroll progressively to load all React content
-    logWrap(logs, "⬇️ Scrolling until all events are loaded...");
+    // Scroll to force React to render
+    logWrap(logs, "⬇️ Scrolling to trigger full hydration...");
     await page.evaluate(async () => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
-      for (let i = 0; i < 25; i++) {
+      for (let i = 0; i < 30; i++) {
         window.scrollTo(0, document.body.scrollHeight);
-        await sleep(1000);
+        await sleep(800);
       }
     });
 
-    // Wait for any ranking links to appear
-    await page.waitForFunction(() => {
-      const anchors = Array.from(document.querySelectorAll("a[href*='/ranking/']"));
-      return anchors.length > 0;
-    }, { timeout: 60000 });
+    // Capture all links on the page
+    const allLinks = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("a")).map(a => ({
+        text: a.textContent?.trim(),
+        href: a.href
+      }))
+    );
 
-    // Extract all event URLs
-    const list = await page.evaluate(() => {
-      const seen = new Set();
-      const anchors = Array.from(document.querySelectorAll("a[href*='/ranking/']"));
-      return anchors
-        .map(a => ({
-          name: a.textContent.trim(),
-          href: a.href
-        }))
-        .filter(e => e.name && e.href && !seen.has(e.href) && seen.add(e.href));
+    logWrap(logs, `🔗 Found ${allLinks.length} total links.`);
+    const rankingLinks = allLinks.filter(a => a.href.includes("/ranking/"));
+
+    // Log first 10 links to Render logs
+    logWrap(
+      logs,
+      `🧭 First 10 links:\n${allLinks
+        .slice(0, 10)
+        .map(a => `${a.text} → ${a.href}`)
+        .join("\n")}`
+    );
+
+    if (!rankingLinks.length) {
+      throw new Error(
+        "No ranking links found — check Render logs for printed link patterns."
+      );
+    }
+
+    fs.writeFileSync(listFile, JSON.stringify(rankingLinks, null, 2));
+    logWrap(logs, `💾 Saved ${rankingLinks.length} events to ${listFile}`);
+
+    res.json({
+      ok: true,
+      count: rankingLinks.length,
+      events: rankingLinks.slice(0, 10),
+      log: logs
     });
-
-    if (!list.length) throw new Error("No ranking links found on page after hydration.");
-
-    // Save locally
-    fs.writeFileSync(listFile, JSON.stringify(list, null, 2));
-    logWrap(logs, `💾 Saved ${list.length} events to ${listFile}`);
-
-    res.json({ ok: true, count: list.length, events: list, log: logs });
   } catch (err) {
     logWrap(logs, `❌ Fatal: ${err.message}`);
     res.status(500).json({ error: err.message, log: logs });
@@ -84,9 +93,9 @@ app.get("/api/scrape-event-list", async (_, res) => {
   }
 });
 
-// =========================================================
-// STEP 2: Scrape podium results for all (or new) events
-// =========================================================
+// ===================================================================
+// STEP 2 — Scrape podiums for events in stored list
+// ===================================================================
 app.get("/api/scrape-from-list", async (_, res) => {
   if (!fs.existsSync(listFile)) {
     return res.status(404).json({ error: "Run /api/scrape-event-list first." });
@@ -156,9 +165,9 @@ app.get("/api/scrape-from-list", async (_, res) => {
   }
 });
 
-// =========================================================
-// STEP 3: View stored data
-// =========================================================
+// ===================================================================
+// STEP 3 — Data inspection endpoints
+// ===================================================================
 app.get("/api/event-list", (_, res) => {
   if (!fs.existsSync(listFile)) {
     return res.status(404).json({ error: "No events-list found" });
@@ -173,9 +182,9 @@ app.get("/api/last-run", (_, res) => {
   res.json(JSON.parse(fs.readFileSync(resultFile, "utf8")));
 });
 
-// =========================================================
-// STEP 4: Fallback single race scraper (useful for testing)
-// =========================================================
+// ===================================================================
+// STEP 4 — Single event scraper (testing)
+// ===================================================================
 app.get("/api/scrape", async (req, res) => {
   const eventUrl = req.query.url;
   if (!eventUrl) return res.status(400).json({ error: "Missing ?url parameter" });
@@ -215,9 +224,9 @@ app.get("/api/scrape", async (req, res) => {
   }
 });
 
-// =========================================================
-// Server startup
-// =========================================================
+// ===================================================================
+// Start server
+// ===================================================================
 app.listen(PORT, () =>
   console.log(`✅ HYROX Season Scraper running on port ${PORT}`)
 );
