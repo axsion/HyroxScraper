@@ -5,18 +5,28 @@ import chromium from "chromium";
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+const categories = [
+  { gender: "men", age: "45-49" },
+  { gender: "men", age: "50-54" },
+  { gender: "men", age: "55-59" },
+  { gender: "men", age: "60-64" },
+  { gender: "men", age: "65-69" },
+  { gender: "men", age: "70" },
+  { gender: "women", age: "45-49" },
+  { gender: "women", age: "50-54" },
+  { gender: "women", age: "55-59" },
+  { gender: "women", age: "60-64" },
+  { gender: "women", age: "65-69" },
+  { gender: "women", age: "70" }
+];
+
 app.get("/api/scrape", async (req, res) => {
-  const eventUrl =
-    req.query.eventUrl ||
-    "https://www.hyresult.com/ranking/s8-2025-toronto-hyrox-men?ag=45-49";
-
-  console.log(`🔍 Opening ${eventUrl}`);
-
+  const baseEvent = "https://www.hyresult.com/ranking/s8-2025-toronto-hyrox-";
+  const pathToChrome = chromium.path;
   let browser;
-  try {
-    const pathToChrome = chromium.path;
-    console.log("✅ Using Chromium binary at:", pathToChrome);
+  let eventName = "HYROX Event";
 
+  try {
     browser = await puppeteer.launch({
       headless: true,
       executablePath: pathToChrome,
@@ -24,36 +34,58 @@ app.get("/api/scrape", async (req, res) => {
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--no-zygote",
-      ],
+        "--disable-gpu"
+      ]
     });
 
-    const page = await browser.newPage();
-    await page.goto(eventUrl, { waitUntil: "networkidle2", timeout: 0 });
-    await page.waitForSelector("table tbody tr");
+    const results = [];
 
-    const athletes = await page.evaluate(() => {
-      const rows = Array.from(document.querySelectorAll("table tbody tr"));
-      return rows.slice(0, 100).map((row) => {
-        const cells = row.querySelectorAll("td");
-        return {
-          rank: cells[1]?.innerText.trim(),
-          name: cells[3]?.innerText.trim(),
-          ageGroup: cells[4]?.innerText.trim(),
-          time: cells[5]?.innerText.trim(),
-        };
-      });
-    });
+    for (const cat of categories) {
+      const page = await browser.newPage();
+      const url = `${baseEvent}${cat.gender}?ag=${cat.age}`;
+      console.log(`🔍 Scraping ${url}`);
 
-    const result = {
-      eventName: "HYROX Toronto 2025",
-      category: "MEN 45-49",
-      athletes,
-    };
+      try {
+        await page.goto(url, { waitUntil: "networkidle2", timeout: 0 });
+        await page.waitForSelector("table tbody tr", { timeout: 10000 });
 
-    console.log(`✅ Scraped ${athletes.length} athletes`);
-    res.json(result);
+        // Extract event name dynamically (only once)
+        if (eventName === "HYROX Event") {
+          eventName =
+            (await page.$eval("h1", el => el.innerText.trim())) ||
+            (await page.title()) ||
+            "HYROX Event";
+          console.log(`📍 Event detected: ${eventName}`);
+        }
+
+        const athletes = await page.evaluate(() => {
+          const rows = Array.from(document.querySelectorAll("table tbody tr"));
+          return rows.slice(0, 3).map(row => {
+            const cells = row.querySelectorAll("td");
+            return {
+              rank: cells[1]?.innerText.trim(),
+              name: cells[3]?.innerText.trim(),
+              ageGroup: cells[4]?.innerText.trim(),
+              time: cells[5]?.innerText.trim()
+            };
+          });
+        });
+
+        results.push({
+          category: `${cat.gender.toUpperCase()} ${cat.age}`,
+          athletes
+        });
+        await page.close();
+      } catch (err) {
+        console.warn(`⚠️ Failed ${cat.gender} ${cat.age}: ${err.message}`);
+        results.push({
+          category: `${cat.gender.toUpperCase()} ${cat.age}`,
+          athletes: []
+        });
+      }
+    }
+
+    res.json({ eventName, categories: results });
   } catch (err) {
     console.error("❌ Scrape error:", err);
     res.status(500).json({ error: err.message });
@@ -63,5 +95,5 @@ app.get("/api/scrape", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`✅ HYRESULT Puppeteer scraper running on port ${PORT}`);
+  console.log(`✅ HYRESULT multi-category scraper running on port ${PORT}`);
 });
