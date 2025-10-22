@@ -1,6 +1,6 @@
 {
   "name": "hyroxscraper",
-  "version": "1.2.0",
+  "version": "3.0.0",
   "type": "module",
   "main": "index.js",
   "scripts": {
@@ -9,7 +9,6 @@
   "dependencies": {
     "express": "^4.19.2",
     "cors": "^2.8.5",
-    "node-fetch": "^3.3.2",
-    "cheerio": "^1.0.0-rc.12"
+    "node-fetch": "^3.3.2"
   }
 }
