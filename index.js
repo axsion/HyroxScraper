@@ -6,12 +6,17 @@ import { chromium } from "playwright";
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// --- Directories for saved data
+// -----------------------------------------------------------------------------
+// 📁 Paths
+// -----------------------------------------------------------------------------
 const dataDir = path.join(process.cwd(), "data");
 const listFile = path.join(dataDir, "events-list.json");
 const resultFile = path.join(dataDir, "last-run.json");
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
+// -----------------------------------------------------------------------------
+// 🧾 Logging helper
+// -----------------------------------------------------------------------------
 const logWrap = (logs, msg) => {
   const line = `${new Date().toISOString().split("T")[1].split(".")[0]} - ${msg}`;
   console.log(line);
@@ -24,7 +29,7 @@ const logWrap = (logs, msg) => {
 app.get("/api/health", (_, res) => res.json({ ok: true }));
 
 // -----------------------------------------------------------------------------
-// 🧭 STEP 1 – Collect all event URLs and save to /data/events-list.json
+// 🧭 STEP 1 – Collect all event URLs
 // -----------------------------------------------------------------------------
 app.get("/api/scrape-event-list", async (_, res) => {
   let browser;
@@ -42,21 +47,19 @@ app.get("/api/scrape-event-list", async (_, res) => {
       timeout: 0
     });
 
-    // Smooth scroll to load all lazy content
-    logWrap(logs, "⬇️ Scrolling until end of page...");
+    logWrap(logs, "⬇️ Scrolling until all events are loaded...");
     await page.evaluate(async () => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
-      let prevHeight = 0;
+      let prev = 0;
       for (let i = 0; i < 30; i++) {
         window.scrollTo(0, document.body.scrollHeight);
         await sleep(1000);
         const height = document.body.scrollHeight;
-        if (height === prevHeight) break;
-        prevHeight = height;
+        if (height === prev) break;
+        prev = height;
       }
     });
 
-    // Collect ranking links
     const events = await page.evaluate(() => {
       const anchors = Array.from(document.querySelectorAll("a[href*='/ranking/']"));
       const seen = new Set();
@@ -68,8 +71,7 @@ app.get("/api/scrape-event-list", async (_, res) => {
         .filter(e => e.name && e.href && !seen.has(e.href) && seen.add(e.href));
     });
 
-    if (!events.length) throw new Error("No ranking links found on page.");
-
+    if (!events.length) throw new Error("No ranking links found.");
     fs.writeFileSync(listFile, JSON.stringify(events, null, 2));
     logWrap(logs, `💾 Saved ${events.length} events to ${listFile}`);
 
@@ -83,25 +85,40 @@ app.get("/api/scrape-event-list", async (_, res) => {
 });
 
 // -----------------------------------------------------------------------------
-// 🏁 STEP 2 – Load events-list.json and scrape podiums for each event
+// 🏁 STEP 2 – Scrape podiums (append-only)
 // -----------------------------------------------------------------------------
 app.get("/api/scrape-from-list", async (_, res) => {
   if (!fs.existsSync(listFile))
     return res.status(404).json({ error: "Run /api/scrape-event-list first." });
 
-  const events = JSON.parse(fs.readFileSync(listFile, "utf8"));
-  let browser;
+  const allEvents = JSON.parse(fs.readFileSync(listFile, "utf8"));
+
+  // Load previous results if they exist
+  let previousData = { events: [] };
+  if (fs.existsSync(resultFile)) {
+    previousData = JSON.parse(fs.readFileSync(resultFile, "utf8"));
+  }
+  const existingUrls = new Set(previousData.events.map(e => e.url));
+
+  // Filter only new events
+  const newEvents = allEvents.filter(ev => !existingUrls.has(ev.href));
   const logs = [];
-  const results = [];
+  const results = [...previousData.events]; // start with existing data
+  let browser;
 
   try {
-    logWrap(logs, "🚀 Launching browser...");
+    if (!newEvents.length) {
+      logWrap(logs, "✅ No new events to scrape. Dataset already up-to-date.");
+      return res.json({ ok: true, message: "No new events", log: logs });
+    }
+
+    logWrap(logs, `🚀 Launching browser for ${newEvents.length} new events...`);
     browser = await chromium.launch({ headless: true });
 
-    for (const [i, ev] of events.entries()) {
+    for (const [i, ev] of newEvents.entries()) {
       try {
         const page = await browser.newPage();
-        logWrap(logs, `(${i + 1}/${events.length}) 🏁 Scraping ${ev.name}`);
+        logWrap(logs, `(${i + 1}/${newEvents.length}) 🏁 Scraping ${ev.name}`);
         await page.goto(ev.href, { waitUntil: "domcontentloaded", timeout: 0 });
         await page.waitForSelector("table tbody tr", { timeout: 20000 });
 
@@ -125,10 +142,12 @@ app.get("/api/scrape-from-list", async (_, res) => {
       }
     }
 
-    fs.writeFileSync(resultFile, JSON.stringify({ date: new Date().toISOString(), events: results }, null, 2));
-    logWrap(logs, `💾 Saved podiums for ${results.length} events`);
+    // Save merged dataset
+    const output = { date: new Date().toISOString(), events: results };
+    fs.writeFileSync(resultFile, JSON.stringify(output, null, 2));
+    logWrap(logs, `💾 Saved updated dataset with ${results.length} total events`);
 
-    res.json({ ok: true, count: results.length, events: results, log: logs });
+    res.json({ ok: true, newCount: newEvents.length, total: results.length, log: logs });
   } catch (err) {
     logWrap(logs, `❌ Fatal: ${err.message}`);
     res.status(500).json({ error: err.message, log: logs });
@@ -138,7 +157,7 @@ app.get("/api/scrape-from-list", async (_, res) => {
 });
 
 // -----------------------------------------------------------------------------
-// 📂 View saved files
+// 📂 View saved data
 // -----------------------------------------------------------------------------
 app.get("/api/event-list", (_, res) => {
   if (!fs.existsSync(listFile)) return res.status(404).json({ error: "No events-list found" });
@@ -153,4 +172,4 @@ app.get("/api/last-run", (_, res) => {
 // -----------------------------------------------------------------------------
 // 🚀 Start server
 // -----------------------------------------------------------------------------
-app.listen(PORT, () => console.log(`✅ HYROX hybrid scraper running on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ HYROX hybrid scraper (append-only) running on port ${PORT}`));
