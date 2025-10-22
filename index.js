@@ -24,7 +24,6 @@ app.get("/api/health", (req, res) => {
   res.json({ ok: true });
 });
 
-// Main scraper route for last 5 events
 app.get("/api/scrape-season", async (req, res) => {
   let browser;
   try {
@@ -38,9 +37,12 @@ app.get("/api/scrape-season", async (req, res) => {
       timeout: 0,
     });
 
-    // Extract event links and names
+    // ✅ Wait for the React table to render (HYRESULT uses Ant Design tables)
+    await page.waitForSelector(".ant-table-tbody tr", { timeout: 20000 });
+
+    // ✅ Extract event names + links from the table
     const events = await page.evaluate(() => {
-      const rows = Array.from(document.querySelectorAll(".ant-table-row"));
+      const rows = Array.from(document.querySelectorAll(".ant-table-tbody tr"));
       return rows.slice(0, 5).map(row => {
         const linkEl = row.querySelector("a[href*='/ranking/']");
         const name = row.querySelector("a")?.innerText.trim();
@@ -53,7 +55,6 @@ app.get("/api/scrape-season", async (req, res) => {
 
     const allResults = [];
 
-    // Loop through each event
     for (const event of events) {
       console.log(`🏁 Scraping ${event.name}`);
       const eventData = {
@@ -109,7 +110,6 @@ app.get("/api/scrape-season", async (req, res) => {
     if (browser) await browser.close();
   }
 });
-
 app.listen(PORT, () => {
   console.log(`✅ HYROX Season scraper running on port ${PORT}`);
 });
