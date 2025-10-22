@@ -1,6 +1,6 @@
 import express from "express";
-import puppeteer from "puppeteer";
-import { executablePath } from "puppeteer";
+import chromium from "chromium";
+import puppeteer from "puppeteer-core";
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -9,20 +9,18 @@ app.get("/api/scrape", async (req, res) => {
   const eventUrl =
     req.query.eventUrl ||
     "https://www.hyresult.com/ranking/s8-2025-toronto-hyrox-men?ag=45-49";
+
   console.log(`🔍 Opening ${eventUrl}`);
 
   let browser;
   try {
-    // Ensure Puppeteer cache and binary are stored locally (inside project)
-    process.env.PUPPETEER_CACHE_DIR = "./.puppeteer-cache";
+    const pathToChrome = chromium.path;
 
-    const pathToChrome = await executablePath();
-
-    console.log("✅ Using Chrome executable at:", pathToChrome);
+    console.log("✅ Using Chromium binary at:", pathToChrome);
 
     browser = await puppeteer.launch({
       headless: true,
-      executablePath: pathToChrome, // 👈 Explicit path fix
+      executablePath: pathToChrome, // ✅ direct path to Chromium
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
@@ -34,6 +32,7 @@ app.get("/api/scrape", async (req, res) => {
 
     const page = await browser.newPage();
     await page.goto(eventUrl, { waitUntil: "networkidle2", timeout: 0 });
+
     await page.waitForSelector("table tbody tr");
 
     const athletes = await page.evaluate(() => {
