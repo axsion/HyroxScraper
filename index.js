@@ -9,16 +9,19 @@ const PORT = process.env.PORT || 3000;
 
 // Helper to fetch from HYRESULT API
 async function fetchCategory(event, gender, group) {
-  const url = `https://api.hyresult.com/api/rankings/s8-2025-${event}-hyrox-${gender}?ag=${group}`;
+  // ✅ Corrected endpoint
+  const url = `https://api.hyresult.com/ranking/s8-2025-${event}-hyrox-${gender}?ag=${group}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
   const json = await res.json();
 
-  // Normalize
-  const top3 = (json.results || []).slice(0, 3).map(r => ({
-    rank: r.rank,
-    name: r.name || r.fullName,
-    time: r.time || r.resultTime,
+  // Check if the structure contains "data" or "results"
+  const entries = json.data || json.results || [];
+
+  const top3 = entries.slice(0, 3).map(r => ({
+    rank: r.rank || r.position,
+    name: r.name || r.athlete || r.fullName,
+    time: r.time || r.result || r.finishTime || "",
   }));
 
   return top3;
