@@ -1,10 +1,13 @@
 {
+  "name": "hyroxscraper",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "puppeteer-core": "^23.0.0",
-    "chromium": "^3.0.3"
+    "express": "^4.18.2",
+    "puppeteer": "^23.7.0"
   }
 }
