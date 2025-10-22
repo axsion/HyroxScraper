@@ -6,31 +6,21 @@ import { chromium } from "playwright";
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// -----------------------------------------------------------------------------
-// 📁 Paths
-// -----------------------------------------------------------------------------
 const dataDir = path.join(process.cwd(), "data");
 const listFile = path.join(dataDir, "events-list.json");
 const resultFile = path.join(dataDir, "last-run.json");
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-// -----------------------------------------------------------------------------
-// 🧾 Logging helper
-// -----------------------------------------------------------------------------
 const logWrap = (logs, msg) => {
   const line = `${new Date().toISOString().split("T")[1].split(".")[0]} - ${msg}`;
   console.log(line);
   logs.push(line);
 };
 
-// -----------------------------------------------------------------------------
-// 🩺 Health Check
-// -----------------------------------------------------------------------------
+// Health check
 app.get("/api/health", (_, res) => res.json({ ok: true }));
 
-// -----------------------------------------------------------------------------
-// 🧭 STEP 1 – Collect all event URLs
-// -----------------------------------------------------------------------------
+// STEP 1 — Extract events list using network interception
 app.get("/api/scrape-event-list", async (_, res) => {
   let browser;
   const logs = [];
@@ -39,76 +29,72 @@ app.get("/api/scrape-event-list", async (_, res) => {
     logWrap(logs, "🚀 Launching browser...");
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
-    await page.setViewportSize({ width: 1400, height: 900 });
+    const events = [];
 
-    logWrap(logs, "🔍 Visiting past events page...");
-    await page.goto("https://www.hyresult.com/events?tab=past", {
-      waitUntil: "domcontentloaded",
-      timeout: 0
-    });
-
-    logWrap(logs, "⬇️ Scrolling until all events are loaded...");
-    await page.evaluate(async () => {
-      const sleep = ms => new Promise(r => setTimeout(r, ms));
-      let prev = 0;
-      for (let i = 0; i < 30; i++) {
-        window.scrollTo(0, document.body.scrollHeight);
-        await sleep(1000);
-        const height = document.body.scrollHeight;
-        if (height === prev) break;
-        prev = height;
+    // Listen for any network responses containing event data
+    page.on("response", async (response) => {
+      const url = response.url();
+      if (url.includes("/api/events")) {
+        try {
+          const data = await response.json();
+          if (data && Array.isArray(data.data)) {
+            data.data.forEach(e => {
+              if (e.name && e.slug) {
+                events.push({
+                  name: e.name,
+                  href: `https://www.hyresult.com/ranking/${e.slug}-hyrox-men?ag=45-49`
+                });
+              }
+            });
+          }
+        } catch {}
       }
     });
 
-    const events = await page.evaluate(() => {
-      const anchors = Array.from(document.querySelectorAll("a[href*='/ranking/']"));
-      const seen = new Set();
-      return anchors
-        .map(a => ({
-          name: a.textContent.trim(),
-          href: a.href
-        }))
-        .filter(e => e.name && e.href && !seen.has(e.href) && seen.add(e.href));
+    logWrap(logs, "🔍 Navigating to HYROX past events...");
+    await page.goto("https://www.hyresult.com/events?tab=past", {
+      waitUntil: "networkidle",
+      timeout: 0
     });
 
-    if (!events.length) throw new Error("No ranking links found.");
+    // Give it time for all API calls to resolve
+    await page.waitForTimeout(8000);
+
+    if (!events.length) throw new Error("Could not intercept events API.");
+
     fs.writeFileSync(listFile, JSON.stringify(events, null, 2));
     logWrap(logs, `💾 Saved ${events.length} events to ${listFile}`);
 
     res.json({ ok: true, count: events.length, events, log: logs });
   } catch (err) {
-    logWrap(logs, `❌ Error: ${err.message}`);
+    logWrap(logs, `❌ Fatal: ${err.message}`);
     res.status(500).json({ error: err.message, log: logs });
   } finally {
     if (browser) await browser.close();
   }
 });
 
-// -----------------------------------------------------------------------------
-// 🏁 STEP 2 – Scrape podiums (append-only)
-// -----------------------------------------------------------------------------
+// STEP 2 — Scrape podiums (append-only)
 app.get("/api/scrape-from-list", async (_, res) => {
   if (!fs.existsSync(listFile))
     return res.status(404).json({ error: "Run /api/scrape-event-list first." });
 
   const allEvents = JSON.parse(fs.readFileSync(listFile, "utf8"));
-
-  // Load previous results if they exist
   let previousData = { events: [] };
   if (fs.existsSync(resultFile)) {
     previousData = JSON.parse(fs.readFileSync(resultFile, "utf8"));
   }
-  const existingUrls = new Set(previousData.events.map(e => e.url));
 
-  // Filter only new events
+  const existingUrls = new Set(previousData.events.map(e => e.url));
   const newEvents = allEvents.filter(ev => !existingUrls.has(ev.href));
+
   const logs = [];
-  const results = [...previousData.events]; // start with existing data
+  const results = [...previousData.events];
   let browser;
 
   try {
     if (!newEvents.length) {
-      logWrap(logs, "✅ No new events to scrape. Dataset already up-to-date.");
+      logWrap(logs, "✅ No new events to scrape. Already up-to-date.");
       return res.json({ ok: true, message: "No new events", log: logs });
     }
 
@@ -142,11 +128,8 @@ app.get("/api/scrape-from-list", async (_, res) => {
       }
     }
 
-    // Save merged dataset
-    const output = { date: new Date().toISOString(), events: results };
-    fs.writeFileSync(resultFile, JSON.stringify(output, null, 2));
-    logWrap(logs, `💾 Saved updated dataset with ${results.length} total events`);
-
+    fs.writeFileSync(resultFile, JSON.stringify({ date: new Date().toISOString(), events: results }, null, 2));
+    logWrap(logs, `💾 Updated dataset with ${results.length} total events`);
     res.json({ ok: true, newCount: newEvents.length, total: results.length, log: logs });
   } catch (err) {
     logWrap(logs, `❌ Fatal: ${err.message}`);
@@ -156,20 +139,14 @@ app.get("/api/scrape-from-list", async (_, res) => {
   }
 });
 
-// -----------------------------------------------------------------------------
-// 📂 View saved data
-// -----------------------------------------------------------------------------
+// View saved files
 app.get("/api/event-list", (_, res) => {
   if (!fs.existsSync(listFile)) return res.status(404).json({ error: "No events-list found" });
   res.json(JSON.parse(fs.readFileSync(listFile, "utf8")));
 });
-
 app.get("/api/last-run", (_, res) => {
   if (!fs.existsSync(resultFile)) return res.status(404).json({ error: "No last-run data found" });
   res.json(JSON.parse(fs.readFileSync(resultFile, "utf8")));
 });
 
-// -----------------------------------------------------------------------------
-// 🚀 Start server
-// -----------------------------------------------------------------------------
-app.listen(PORT, () => console.log(`✅ HYROX hybrid scraper (append-only) running on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ HYROX hybrid scraper with API interception running on port ${PORT}`));
