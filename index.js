@@ -9,30 +9,50 @@ const PORT = process.env.PORT || 3000;
 
 async function fetchCategory(event, gender, group) {
   const url = `https://api.hyresult.com/api/rankings/s8-2025-${event}-hyrox-${gender}`;
+
+  const payload = {
+    ag: group,
+    skip: 0,
+    limit: 100,
+    sort: [{ field: "time", dir: "asc" }],
+  };
+
+  console.log(`🔍 Fetching ${url} with body:`, JSON.stringify(payload));
+
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ag: group,
-      skip: 0,
-      limit: 100,
-      sort: [{ field: "time", dir: "asc" }]
-    })
+    body: JSON.stringify(payload),
   });
 
-  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
-  const json = await res.json();
+  if (!res.ok) {
+    console.error(`❌ Failed ${url} (${res.status})`);
+    throw new Error(`Failed to fetch ${url}: ${res.status}`);
+  }
 
-  // Extract and normalize the top 3
-  const top3 = (json.data || json.results || [])
-    .slice(0, 3)
-    .map(r => ({
-      rank: r.rank || r.position,
-      name: r.name || r.athlete || r.fullName,
-      time: r.time || r.result || r.finishTime || ""
-    }));
+  const text = await res.text();
 
-  console.log(`✅ ${url}?ag=${group} → ${top3.length} athletes`);
+  // 🧠 Debug: show the first 500 characters of the raw response
+  console.log(`📦 Raw response snippet from ${url}: ${text.slice(0, 500)}`);
+
+  // Try to parse JSON safely
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch (err) {
+    console.error(`⚠️ JSON parse error for ${url}:`, err.message);
+    return [];
+  }
+
+  const entries = json.data || json.results || json.items || [];
+
+  const top3 = entries.slice(0, 3).map((r, i) => ({
+    rank: r.rank || r.position || i + 1,
+    name: r.name || r.athlete || r.fullName || "Unknown",
+    time: r.time || r.result || r.finishTime || "",
+  }));
+
+  console.log(`✅ ${url}?ag=${group} → Found ${entries.length} total, returning top ${top3.length}`);
   return top3;
 }
 
