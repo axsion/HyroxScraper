@@ -1,6 +1,5 @@
 import express from "express";
-import puppeteer from "puppeteer-core";
-import chromium from "chromium";
+import puppeteer from "puppeteer";
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -22,14 +21,12 @@ const categories = [
 
 app.get("/api/scrape", async (req, res) => {
   const baseEvent = "https://www.hyresult.com/ranking/s8-2025-toronto-hyrox-";
-  const pathToChrome = chromium.path;
   let browser;
   let eventName = "HYROX Event";
 
   try {
     browser = await puppeteer.launch({
       headless: true,
-      executablePath: pathToChrome,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
@@ -47,9 +44,20 @@ app.get("/api/scrape", async (req, res) => {
 
       try {
         await page.goto(url, { waitUntil: "networkidle2", timeout: 0 });
-        await page.waitForSelector("table tbody tr", { timeout: 10000 });
 
-        // Extract event name dynamically (only once)
+        // Vérifie si le tableau existe avant d’attendre
+        const tableExists = await page.$("table tbody tr");
+        if (!tableExists) {
+          console.warn(`⚠️ No results table found for ${cat.gender} ${cat.age}`);
+          results.push({ category: `${cat.gender.toUpperCase()} ${cat.age}`, athletes: [] });
+          await page.close();
+          continue;
+        }
+
+        // Attend le tableau si présent
+        await page.waitForSelector("table tbody tr", { timeout: 20000 });
+
+        // Récupère le nom de l’événement une seule fois
         if (eventName === "HYROX Event") {
           eventName =
             (await page.$eval("h1", el => el.innerText.trim())) ||
@@ -58,6 +66,7 @@ app.get("/api/scrape", async (req, res) => {
           console.log(`📍 Event detected: ${eventName}`);
         }
 
+        // Extrait les données
         const athletes = await page.evaluate(() => {
           const rows = Array.from(document.querySelectorAll("table tbody tr"));
           return rows.slice(0, 3).map(row => {
