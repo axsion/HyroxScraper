@@ -1,8 +1,15 @@
 import express from "express";
+import fs from "fs";
+import path from "path";
 import { chromium } from "playwright";
 
 const app = express();
 const PORT = process.env.PORT || 10000;
+
+// Folder to store data
+const dataDir = path.join(process.cwd(), "data");
+const dataFile = path.join(dataDir, "last-run.json");
+if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir);
 
 process.on("unhandledRejection", err => {
   console.error("🚨 Unhandled Promise Rejection:", err);
@@ -55,7 +62,7 @@ app.get("/api/scrape", async (req, res) => {
   }
 });
 
-// --- Multi-event (season) scraper with podiums
+// --- Multi-event (season) scraper with storage
 app.get("/api/scrape-season", async (req, res) => {
   let browser;
   const logs = [];
@@ -80,15 +87,15 @@ app.get("/api/scrape-season", async (req, res) => {
     await page.evaluate(() => window.scrollTo(0, 200));
     await page.waitForTimeout(2000);
 
-    // Wait for any visible table or container
+    // Wait for table
     try {
       await page.waitForSelector("div.ant-table", { timeout: 40000 });
       log("✅ Table container detected");
     } catch {
-      log("⚠️ No table detected, fallback to generic links");
+      log("⚠️ No table detected, fallback to links");
     }
 
-    // Scroll through page to ensure lazy rows are loaded
+    // Scroll through to load all events
     log("⬇️ Scrolling through page to trigger lazy load...");
     await page.evaluate(async () => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -156,13 +163,27 @@ app.get("/api/scrape-season", async (req, res) => {
       }
     }
 
-    res.json({ season: "HYROX Archive", events: podiums, log: logs });
+    // Save results locally
+    const resultData = { date: new Date().toISOString(), season: "HYROX Archive", events: podiums };
+    fs.writeFileSync(dataFile, JSON.stringify(resultData, null, 2));
+    log(`💾 Saved ${podiums.length} events to ${dataFile}`);
+
+    res.json({ saved: true, ...resultData, log: logs });
   } catch (err) {
     log(`❌ Fatal error: ${err.message}`);
     res.status(500).json({ error: err.message, log: logs });
   } finally {
     if (browser) await browser.close();
   }
+});
+
+// --- Endpoint to view last saved results
+app.get("/api/last-run", (_, res) => {
+  if (!fs.existsSync(dataFile)) {
+    return res.status(404).json({ error: "No previous run found" });
+  }
+  const data = JSON.parse(fs.readFileSync(dataFile, "utf8"));
+  res.json(data);
 });
 
 // --- Start server
