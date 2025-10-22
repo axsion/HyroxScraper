@@ -24,6 +24,7 @@ async function fetchCategory(event, gender, group) {
     time: r.time || r.result || r.finishTime || "",
   }));
 
+  console.log(`✅ ${url} → ${top3.length} athletes`);
   return top3;
 }
 
