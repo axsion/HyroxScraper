@@ -7,14 +7,17 @@ const PORT = process.env.PORT || 10000;
 app.get("/api/scrape", async (req, res) => {
   let browser;
   try {
+    // 🔧 Récupère le chemin Chrome depuis le répertoire /tmp
+    const browserFetcher = puppeteer.createBrowserFetcher({ path: "/tmp/puppeteer" });
+    const revisionInfo = await browserFetcher.download("131.0.6778.204").catch(() => null);
+    const executablePath = revisionInfo ? revisionInfo.executablePath : puppeteer.executablePath();
+
+    console.log("✅ Using Chrome from:", executablePath);
+
     browser = await puppeteer.launch({
       headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu"
-      ]
+      executablePath,
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
     });
 
     const page = await browser.newPage();
