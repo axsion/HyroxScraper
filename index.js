@@ -11,23 +11,7 @@ process.on("unhandledRejection", err => {
 // --- Health check
 app.get("/api/health", (_, res) => res.json({ ok: true }));
 
-// --- Categories
-const categories = [
-  { gender: "men", age: "45-49" },
-  { gender: "men", age: "50-54" },
-  { gender: "men", age: "55-59" },
-  { gender: "men", age: "60-64" },
-  { gender: "men", age: "65-69" },
-  { gender: "men", age: "70" },
-  { gender: "women", age: "45-49" },
-  { gender: "women", age: "50-54" },
-  { gender: "women", age: "55-59" },
-  { gender: "women", age: "60-64" },
-  { gender: "women", age: "65-69" },
-  { gender: "women", age: "70" }
-];
-
-// --- Single race scrape
+// --- Single race scraper (used for one URL)
 app.get("/api/scrape", async (req, res) => {
   const eventUrl = req.query.url;
   if (!eventUrl) return res.status(400).json({ error: "Missing ?url parameter" });
@@ -71,7 +55,6 @@ app.get("/api/scrape", async (req, res) => {
   }
 });
 
-// --- Multi-event (season) scraper
 // --- Multi-event (season) scraper with podiums
 app.get("/api/scrape-season", async (req, res) => {
   let browser;
@@ -92,11 +75,11 @@ app.get("/api/scrape-season", async (req, res) => {
       timeout: 0
     });
 
-    // Wait for table container (even if empty)
+    // Wait for table container
     await page.waitForSelector(".ant-table-tbody", { timeout: 20000 });
     log("✅ Table container detected");
 
-    // Try to wait for spinner to finish
+    // Optional: wait for spinner
     try {
       await page.waitForSelector(".ant-spin", { state: "visible", timeout: 5000 });
       await page.waitForSelector(".ant-spin", { state: "hidden", timeout: 15000 });
@@ -105,7 +88,7 @@ app.get("/api/scrape-season", async (req, res) => {
       log("⚠️ No spinner detected or finished instantly");
     }
 
-    // Auto-scroll to trigger lazy loading
+    // Scroll through page to load all rows (lazy load)
     log("⬇️ Scrolling through page to trigger full load...");
     await page.evaluate(async () => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -119,7 +102,7 @@ app.get("/api/scrape-season", async (req, res) => {
       }
     });
 
-    // Wait for rows OR fallback links
+    // Wait until links are visible
     await page.waitForFunction(() => {
       return (
         document.querySelectorAll(".ant-table-tbody tr a[href*='/ranking/']").length > 0 ||
@@ -127,7 +110,7 @@ app.get("/api/scrape-season", async (req, res) => {
       );
     }, { timeout: 60000 });
 
-    // Extract up to 5 recent events
+    // Extract 5 most recent event links
     const events = await page.evaluate(() => {
       const linkNodes = Array.from(document.querySelectorAll("a[href*='/ranking/']"));
       const seen = new Set();
@@ -149,6 +132,7 @@ app.get("/api/scrape-season", async (req, res) => {
 
     const podiums = [];
 
+    // For each event, scrape top 3 athletes
     for (const ev of events) {
       try {
         log(`🏁 Scraping podium for ${ev.name}`);
@@ -186,17 +170,6 @@ app.get("/api/scrape-season", async (req, res) => {
     }
 
     res.json({ season: "HYROX Archive", events: podiums, log: logs });
-  } catch (err) {
-    log(`❌ Fatal error: ${err.message}`);
-    res.status(500).json({ error: err.message, log: logs });
-  } finally {
-    if (browser) await browser.close();
-  }
-});
-
-
-    log(`📅 Found ${events.length} events`);
-    res.json({ season: "HYROX Archive", events, log: logs });
   } catch (err) {
     log(`❌ Fatal error: ${err.message}`);
     res.status(500).json({ error: err.message, log: logs });
