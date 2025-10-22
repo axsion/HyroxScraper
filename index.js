@@ -7,24 +7,32 @@ app.use(cors());
 
 const PORT = process.env.PORT || 3000;
 
-// Helper to fetch from HYRESULT API
 async function fetchCategory(event, gender, group) {
-  // ✅ Corrected endpoint
-  const url = `https://api.hyresult.com/ranking/s8-2025-${event}-hyrox-${gender}?ag=${group}`;
-  const res = await fetch(url);
+  const url = `https://api.hyresult.com/api/rankings/s8-2025-${event}-hyrox-${gender}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ag: group,
+      skip: 0,
+      limit: 100,
+      sort: [{ field: "time", dir: "asc" }]
+    })
+  });
+
   if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
   const json = await res.json();
 
-  // Check if the structure contains "data" or "results"
-  const entries = json.data || json.results || [];
+  // Extract and normalize the top 3
+  const top3 = (json.data || json.results || [])
+    .slice(0, 3)
+    .map(r => ({
+      rank: r.rank || r.position,
+      name: r.name || r.athlete || r.fullName,
+      time: r.time || r.result || r.finishTime || ""
+    }));
 
-  const top3 = entries.slice(0, 3).map(r => ({
-    rank: r.rank || r.position,
-    name: r.name || r.athlete || r.fullName,
-    time: r.time || r.result || r.finishTime || "",
-  }));
-
-  console.log(`✅ ${url} → ${top3.length} athletes`);
+  console.log(`✅ ${url}?ag=${group} → ${top3.length} athletes`);
   return top3;
 }
 
