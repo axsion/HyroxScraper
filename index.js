@@ -8,8 +8,7 @@ app.use(cors());
 const PORT = process.env.PORT || 3000;
 
 async function fetchCategory(event, gender, group) {
-  const url = `https://api.hyresult.com/api/rankings/s8-2025-${event}-hyrox-${gender}`;
-
+  const url = `https://www.hyresult.com/api/rankings/s8-2025-${event}-hyrox-${gender}`;
   const payload = {
     ag: group,
     skip: 0,
@@ -31,11 +30,8 @@ async function fetchCategory(event, gender, group) {
   }
 
   const text = await res.text();
-
-  // 🧠 Debug: show the first 500 characters of the raw response
   console.log(`📦 Raw response snippet from ${url}: ${text.slice(0, 500)}`);
 
-  // Try to parse JSON safely
   let json;
   try {
     json = JSON.parse(text);
@@ -45,7 +41,6 @@ async function fetchCategory(event, gender, group) {
   }
 
   const entries = json.data || json.results || json.items || [];
-
   const top3 = entries.slice(0, 3).map((r, i) => ({
     rank: r.rank || r.position || i + 1,
     name: r.name || r.athlete || r.fullName || "Unknown",
