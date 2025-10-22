@@ -1,7 +1,7 @@
 {
   "scripts": {
     "start": "node index.js",
-    "postinstall": "npx puppeteer browsers install chrome"
+    "postinstall": "npx puppeteer browsers install chromium --path ./.puppeteer-cache"
   },
   "dependencies": {
     "express": "^4.19.2",
