@@ -1,21 +1,28 @@
 import express from "express";
 import puppeteer from "puppeteer";
+import { executablePath } from "puppeteer";
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
 app.get("/api/scrape", async (req, res) => {
-  const eventUrl = req.query.eventUrl || "https://www.hyresult.com/ranking/s8-2025-toronto-hyrox-men?ag=45-49";
+  const eventUrl =
+    req.query.eventUrl ||
+    "https://www.hyresult.com/ranking/s8-2025-toronto-hyrox-men?ag=45-49";
   console.log(`🔍 Opening ${eventUrl}`);
 
   let browser;
   try {
-    // Force Puppeteer to use its local cache directory
+    // Ensure Puppeteer cache and binary are stored locally (inside project)
     process.env.PUPPETEER_CACHE_DIR = "./.puppeteer-cache";
 
+    const pathToChrome = await executablePath();
+
+    console.log("✅ Using Chrome executable at:", pathToChrome);
+
     browser = await puppeteer.launch({
-      channel: "chromium", // ✅ use the lightweight Chromium build
       headless: true,
+      executablePath: pathToChrome, // 👈 Explicit path fix
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
@@ -27,12 +34,11 @@ app.get("/api/scrape", async (req, res) => {
 
     const page = await browser.newPage();
     await page.goto(eventUrl, { waitUntil: "networkidle2", timeout: 0 });
-
     await page.waitForSelector("table tbody tr");
 
     const athletes = await page.evaluate(() => {
       const rows = Array.from(document.querySelectorAll("table tbody tr"));
-      return rows.slice(0, 100).map(row => {
+      return rows.slice(0, 100).map((row) => {
         const cells = row.querySelectorAll("td");
         return {
           rank: cells[1]?.innerText.trim(),
