@@ -4,46 +4,104 @@ import { chromium } from "playwright";
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Helper to extract top-3 results from an event page
-async function scrapeTop3FromRanking(page, url) {
-  console.log("🔍 Opening", url);
-  await page.goto(url, { waitUntil: "networkidle" });
+const categories = [
+  { gender: "men", age: "45-49" },
+  { gender: "men", age: "50-54" },
+  { gender: "men", age: "55-59" },
+  { gender: "men", age: "60-64" },
+  { gender: "men", age: "65-69" },
+  { gender: "men", age: "70" },
+  { gender: "women", age: "45-49" },
+  { gender: "women", age: "50-54" },
+  { gender: "women", age: "55-59" },
+  { gender: "women", age: "60-64" },
+  { gender: "women", age: "65-69" },
+  { gender: "women", age: "70" },
+];
 
-  await page.waitForSelector("table tbody tr", { timeout: 15000 });
+// Health check route
+app.get("/api/health", (req, res) => {
+  res.json({ ok: true });
+});
 
-  const eventName =
-    (await page.$eval("h1", el => el.textContent.trim()).catch(() => null)) ||
-    "HYROX Event";
-
-  const podium = await page.$$eval("table tbody tr", rows =>
-    rows.slice(0, 3).map(row => {
-      const cells = row.querySelectorAll("td");
-      return {
-        rank: cells[1]?.innerText.trim() || "",
-        name: cells[3]?.innerText.trim() || "",
-        ageGroup: cells[4]?.innerText.trim() || "",
-        time: cells[5]?.innerText.trim() || ""
-      };
-    })
-  );
-
-  return { eventName, podium };
-}
-
-// Endpoint to scrape a single event
-app.get("/api/scrape", async (req, res) => {
-  const url = req.query.url;
-  if (!url) return res.status(400).json({ error: "Missing ?url=" });
-
+// Main scraper route for last 5 events
+app.get("/api/scrape-season", async (req, res) => {
   let browser;
   try {
-    browser = await chromium.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"]
-    });
+    console.log("🚀 Launching browser...");
+    browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
-    const data = await scrapeTop3FromRanking(page, url);
-    res.json(data);
+
+    console.log("🔍 Visiting events page...");
+    await page.goto("https://www.hyresult.com/events?tab=past", {
+      waitUntil: "networkidle",
+      timeout: 0,
+    });
+
+    // Extract event links and names
+    const events = await page.evaluate(() => {
+      const rows = Array.from(document.querySelectorAll(".ant-table-row"));
+      return rows.slice(0, 5).map(row => {
+        const linkEl = row.querySelector("a[href*='/ranking/']");
+        const name = row.querySelector("a")?.innerText.trim();
+        const href = linkEl ? linkEl.href : null;
+        return href && name ? { name, href } : null;
+      }).filter(Boolean);
+    });
+
+    console.log(`📅 Found ${events.length} recent events`);
+
+    const allResults = [];
+
+    // Loop through each event
+    for (const event of events) {
+      console.log(`🏁 Scraping ${event.name}`);
+      const eventData = {
+        eventName: event.name,
+        url: event.href,
+        categories: [],
+      };
+
+      for (const cat of categories) {
+        const catUrl = `${event.href}-${cat.gender}?ag=${cat.age}`;
+        console.log(`   🔸 ${catUrl}`);
+        const catPage = await browser.newPage();
+        try {
+          await catPage.goto(catUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+          await catPage.waitForSelector("table tbody tr", { timeout: 8000 });
+
+          const athletes = await catPage.evaluate(() => {
+            const rows = Array.from(document.querySelectorAll("table tbody tr"));
+            return rows.slice(0, 3).map(row => {
+              const cells = row.querySelectorAll("td");
+              return {
+                rank: cells[1]?.innerText.trim(),
+                name: cells[3]?.innerText.trim(),
+                ageGroup: cells[4]?.innerText.trim(),
+                time: cells[5]?.innerText.trim(),
+              };
+            });
+          });
+
+          eventData.categories.push({
+            category: `${cat.gender.toUpperCase()} ${cat.age}`,
+            athletes,
+          });
+        } catch (err) {
+          console.warn(`⚠️ Failed ${cat.gender} ${cat.age}: ${err.message}`);
+          eventData.categories.push({
+            category: `${cat.gender.toUpperCase()} ${cat.age}`,
+            athletes: [],
+          });
+        } finally {
+          await catPage.close();
+        }
+      }
+
+      allResults.push(eventData);
+    }
+
+    res.json({ season: "HYROX Archive", events: allResults });
   } catch (err) {
     console.error("❌ Scrape error:", err);
     res.status(500).json({ error: err.message });
@@ -52,11 +110,6 @@ app.get("/api/scrape", async (req, res) => {
   }
 });
 
-// Health check
-app.get("/api/health", (req, res) => {
-  res.json({ ok: true });
+app.listen(PORT, () => {
+  console.log(`✅ HYROX Season scraper running on port ${PORT}`);
 });
-
-app.listen(PORT, () =>
-  console.log(`✅ HYROX Playwright scraper running on port ${PORT}`)
-);
