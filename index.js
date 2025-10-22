@@ -4,15 +4,14 @@ import { chromium } from "playwright";
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// --- Handle all unhandled promise rejections
 process.on("unhandledRejection", err => {
   console.error("🚨 Unhandled Promise Rejection:", err);
 });
 
-// --- Health Check endpoint
+// --- Health check
 app.get("/api/health", (_, res) => res.json({ ok: true }));
 
-// --- Category definitions
+// --- Categories
 const categories = [
   { gender: "men", age: "45-49" },
   { gender: "men", age: "50-54" },
@@ -28,12 +27,10 @@ const categories = [
   { gender: "women", age: "70" }
 ];
 
-// --- Single race scrape (for debug)
+// --- Single race scrape
 app.get("/api/scrape", async (req, res) => {
   const eventUrl = req.query.url;
-  if (!eventUrl) {
-    return res.status(400).json({ error: "Missing ?url parameter" });
-  }
+  if (!eventUrl) return res.status(400).json({ error: "Missing ?url parameter" });
 
   let browser;
   const logs = [];
@@ -43,7 +40,7 @@ app.get("/api/scrape", async (req, res) => {
   };
 
   try {
-    log(`🚀 Launching Playwright...`);
+    log("🚀 Launching Playwright...");
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
 
@@ -65,11 +62,7 @@ app.get("/api/scrape", async (req, res) => {
       });
     });
 
-    res.json({
-      eventName,
-      podium: athletes,
-      log: logs
-    });
+    res.json({ eventName, podium: athletes, log: logs });
   } catch (err) {
     log(`❌ Scrape error: ${err.message}`);
     res.status(500).json({ error: err.message, log: logs });
@@ -94,25 +87,26 @@ app.get("/api/scrape-season", async (req, res) => {
 
     log("🔍 Visiting past events page...");
     await page.goto("https://www.hyresult.com/events?tab=past", {
-      waitUntil: "domcontentloaded",
+      waitUntil: "networkidle",
       timeout: 0
     });
 
-    // Wait for React table to populate
-    let tableReady = false;
-    for (let i = 0; i < 8; i++) {
-      const rows = await page.$$(".ant-table-tbody tr");
-      if (rows.length > 0) {
-        tableReady = true;
-        log(`✅ Table detected after ${i * 5}s`);
-        break;
-      }
-      log(`⏳ Waiting for table... (${i + 1}/8)`);
-      await page.waitForTimeout(5000);
+    // Wait for the spinner to finish loading
+    try {
+      await page.waitForSelector(".ant-spin", { state: "visible", timeout: 10000 });
+      await page.waitForSelector(".ant-spin", { state: "hidden", timeout: 20000 });
+      log("✅ Spinner finished loading");
+    } catch {
+      log("⚠️ No spinner detected, continuing...");
     }
-    if (!tableReady) throw new Error("Table did not load after 40 seconds.");
 
-    // Extract last 5 events
+    // Wait until at least one ranking link is visible
+    const found = await page.waitForFunction(() => {
+      return document.querySelectorAll(".ant-table-tbody tr a[href*='/ranking/']").length > 0;
+    }, { timeout: 30000 });
+
+    if (!found) throw new Error("No event links found after waiting");
+
     const events = await page.evaluate(() => {
       const rows = Array.from(document.querySelectorAll(".ant-table-tbody tr"));
       return rows.slice(0, 5).map(row => {
@@ -124,54 +118,7 @@ app.get("/api/scrape-season", async (req, res) => {
     });
 
     log(`📅 Found ${events.length} events`);
-    const allResults = [];
-
-    for (const [index, event] of events.entries()) {
-      log(`🏁 (${index + 1}/${events.length}) Scraping: ${event.name}`);
-      const eventData = { eventName: event.name, url: event.href, categories: [] };
-
-      for (const cat of categories) {
-        const catUrl = `${event.href}-${cat.gender}?ag=${cat.age}`;
-        log(`   🔸 ${catUrl}`);
-        const catPage = await browser.newPage();
-
-        try {
-          await catPage.goto(catUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
-          await catPage.waitForSelector("table tbody tr", { timeout: 8000 });
-
-          const athletes = await catPage.evaluate(() => {
-            const rows = Array.from(document.querySelectorAll("table tbody tr"));
-            return rows.slice(0, 3).map(row => {
-              const cells = row.querySelectorAll("td");
-              return {
-                rank: cells[1]?.innerText.trim(),
-                name: cells[3]?.innerText.trim(),
-                ageGroup: cells[4]?.innerText.trim(),
-                time: cells[5]?.innerText.trim()
-              };
-            });
-          });
-
-          log(`      ✅ ${cat.gender.toUpperCase()} ${cat.age}: ${athletes.length} athletes`);
-          eventData.categories.push({
-            category: `${cat.gender.toUpperCase()} ${cat.age}`,
-            athletes
-          });
-        } catch (err) {
-          log(`      ⚠️ ${cat.gender.toUpperCase()} ${cat.age} failed: ${err.message}`);
-          eventData.categories.push({
-            category: `${cat.gender.toUpperCase()} ${cat.age}`,
-            athletes: []
-          });
-        } finally {
-          await catPage.close();
-        }
-      }
-
-      allResults.push(eventData);
-    }
-
-    res.json({ season: "HYROX Archive", events: allResults, log: logs });
+    res.json({ season: "HYROX Archive", events, log: logs });
   } catch (err) {
     log(`❌ Fatal error: ${err.message}`);
     res.status(500).json({ error: err.message, log: logs });
@@ -180,7 +127,5 @@ app.get("/api/scrape-season", async (req, res) => {
   }
 });
 
-// --- Keep Render container alive
-app.listen(PORT, () => {
-  console.log(`✅ HYROX Season Scraper running on port ${PORT}`);
-});
+// --- Keep alive
+app.listen(PORT, () => console.log(`✅ HYROX Season Scraper running on port ${PORT}`));
