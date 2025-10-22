@@ -19,11 +19,6 @@ const categories = [
   { gender: "women", age: "70" },
 ];
 
-// Health check route
-app.get("/api/health", (req, res) => {
-  res.json({ ok: true });
-});
-
 app.get("/api/scrape-season", async (req, res) => {
   let browser;
   try {
@@ -32,15 +27,25 @@ app.get("/api/scrape-season", async (req, res) => {
     const page = await browser.newPage();
 
     console.log("🔍 Visiting events page...");
-    await page.goto("https://www.hyresult.com/events?tab=past", {
-      waitUntil: "networkidle",
-      timeout: 0,
-    });
+    await page.goto("https://www.hyresult.com/events?tab=past", { waitUntil: "domcontentloaded", timeout: 0 });
 
-    // ✅ Wait for the React table to render (HYRESULT uses Ant Design tables)
-    await page.waitForSelector(".ant-table-tbody tr", { timeout: 20000 });
+    // 🕓 Wait up to 40s for the React table to populate
+    let tableReady = false;
+    for (let i = 0; i < 8; i++) {       // 8×5 s = 40 s
+      const rows = await page.$$(".ant-table-tbody tr");
+      if (rows.length > 0) {
+        tableReady = true;
+        break;
+      }
+      console.log(`⏳ Waiting for table... (${i + 1}/8)`);
+      await page.waitForTimeout(5000);
+    }
 
-    // ✅ Extract event names + links from the table
+    if (!tableReady) {
+      throw new Error("Table did not load after 40 seconds — HYRESULT may have changed its structure.");
+    }
+
+    // ✅ Extract top 5 events
     const events = await page.evaluate(() => {
       const rows = Array.from(document.querySelectorAll(".ant-table-tbody tr"));
       return rows.slice(0, 5).map(row => {
@@ -51,17 +56,12 @@ app.get("/api/scrape-season", async (req, res) => {
       }).filter(Boolean);
     });
 
-    console.log(`📅 Found ${events.length} recent events`);
-
+    console.log(`📅 Found ${events.length} events`);
     const allResults = [];
 
     for (const event of events) {
       console.log(`🏁 Scraping ${event.name}`);
-      const eventData = {
-        eventName: event.name,
-        url: event.href,
-        categories: [],
-      };
+      const eventData = { eventName: event.name, url: event.href, categories: [] };
 
       for (const cat of categories) {
         const catUrl = `${event.href}-${cat.gender}?ag=${cat.age}`;
@@ -70,7 +70,6 @@ app.get("/api/scrape-season", async (req, res) => {
         try {
           await catPage.goto(catUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
           await catPage.waitForSelector("table tbody tr", { timeout: 8000 });
-
           const athletes = await catPage.evaluate(() => {
             const rows = Array.from(document.querySelectorAll("table tbody tr"));
             return rows.slice(0, 3).map(row => {
@@ -83,17 +82,10 @@ app.get("/api/scrape-season", async (req, res) => {
               };
             });
           });
-
-          eventData.categories.push({
-            category: `${cat.gender.toUpperCase()} ${cat.age}`,
-            athletes,
-          });
+          eventData.categories.push({ category: `${cat.gender.toUpperCase()} ${cat.age}`, athletes });
         } catch (err) {
           console.warn(`⚠️ Failed ${cat.gender} ${cat.age}: ${err.message}`);
-          eventData.categories.push({
-            category: `${cat.gender.toUpperCase()} ${cat.age}`,
-            athletes: [],
-          });
+          eventData.categories.push({ category: `${cat.gender.toUpperCase()} ${cat.age}`, athletes: [] });
         } finally {
           await catPage.close();
         }
@@ -109,7 +101,4 @@ app.get("/api/scrape-season", async (req, res) => {
   } finally {
     if (browser) await browser.close();
   }
-});
-app.listen(PORT, () => {
-  console.log(`✅ HYROX Season scraper running on port ${PORT}`);
 });
