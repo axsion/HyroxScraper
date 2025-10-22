@@ -11,7 +11,7 @@ process.on("unhandledRejection", err => {
 // --- Health check
 app.get("/api/health", (_, res) => res.json({ ok: true }));
 
-// --- Single race scraper (used for one URL)
+// --- Single race scraper (individual event)
 app.get("/api/scrape", async (req, res) => {
   const eventUrl = req.query.url;
   if (!eventUrl) return res.status(400).json({ error: "Missing ?url parameter" });
@@ -68,6 +68,7 @@ app.get("/api/scrape-season", async (req, res) => {
     log("🚀 Launching browser...");
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
+    await page.setViewportSize({ width: 1400, height: 900 });
 
     log("🔍 Visiting past events page...");
     await page.goto("https://www.hyresult.com/events?tab=past", {
@@ -75,60 +76,46 @@ app.get("/api/scrape-season", async (req, res) => {
       timeout: 0
     });
 
-    // Wait for table container
-    await page.waitForSelector(".ant-table-tbody", { timeout: 20000 });
-    log("✅ Table container detected");
+    // Scroll gently to trigger React hydration
+    await page.evaluate(() => window.scrollTo(0, 200));
+    await page.waitForTimeout(2000);
 
-    // Optional: wait for spinner
+    // Wait for any visible table or container
     try {
-      await page.waitForSelector(".ant-spin", { state: "visible", timeout: 5000 });
-      await page.waitForSelector(".ant-spin", { state: "hidden", timeout: 15000 });
-      log("✅ Spinner finished loading");
+      await page.waitForSelector("div.ant-table", { timeout: 40000 });
+      log("✅ Table container detected");
     } catch {
-      log("⚠️ No spinner detected or finished instantly");
+      log("⚠️ No table detected, fallback to generic links");
     }
 
-    // Scroll through page to load all rows (lazy load)
-    log("⬇️ Scrolling through page to trigger full load...");
+    // Scroll through page to ensure lazy rows are loaded
+    log("⬇️ Scrolling through page to trigger lazy load...");
     await page.evaluate(async () => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
-      let lastHeight = 0;
       for (let i = 0; i < 10; i++) {
         window.scrollTo(0, document.body.scrollHeight);
-        await sleep(1000);
-        const newHeight = document.body.scrollHeight;
-        if (newHeight === lastHeight) break;
-        lastHeight = newHeight;
+        await sleep(1500);
       }
     });
 
-    // Wait until links are visible
+    // Wait for ranking links
     await page.waitForFunction(() => {
-      return (
-        document.querySelectorAll(".ant-table-tbody tr a[href*='/ranking/']").length > 0 ||
-        document.querySelectorAll("a[href*='/ranking/']").length > 0
-      );
+      return document.querySelectorAll("a[href*='/ranking/']").length > 0;
     }, { timeout: 60000 });
+    log("✅ Ranking links detected");
 
-    // Extract 5 most recent event links
+    // Extract up to 5 event URLs
     const events = await page.evaluate(() => {
-      const linkNodes = Array.from(document.querySelectorAll("a[href*='/ranking/']"));
+      const links = Array.from(document.querySelectorAll("a[href*='/ranking/']"));
       const seen = new Set();
-      const clean = linkNodes
-        .map(a => {
-          const name = a.innerText.trim();
-          const href = a.href;
-          if (!name || !href || seen.has(href)) return null;
-          seen.add(href);
-          return { name, href };
-        })
-        .filter(Boolean)
+      return links
+        .map(a => ({ name: a.textContent.trim(), href: a.href }))
+        .filter(e => e.name && e.href && !seen.has(e.href) && seen.add(e.href))
         .slice(0, 5);
-      return clean;
     });
 
     log(`📅 Found ${events.length} events, fetching podiums...`);
-    if (events.length === 0) throw new Error("No events extracted after scroll");
+    if (events.length === 0) throw new Error("No events extracted");
 
     const podiums = [];
 
@@ -141,7 +128,7 @@ app.get("/api/scrape-season", async (req, res) => {
           waitUntil: "domcontentloaded",
           timeout: 0
         });
-        await pageEvent.waitForSelector("table tbody tr", { timeout: 15000 });
+        await pageEvent.waitForSelector("table tbody tr", { timeout: 20000 });
 
         const eventName = await pageEvent.title();
         const athletes = await pageEvent.evaluate(() => {
@@ -178,5 +165,5 @@ app.get("/api/scrape-season", async (req, res) => {
   }
 });
 
-// --- Keep alive
+// --- Start server
 app.listen(PORT, () => console.log(`✅ HYROX Season Scraper running on port ${PORT}`));
