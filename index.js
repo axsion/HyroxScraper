@@ -1,45 +1,32 @@
 import express from "express";
 import cors from "cors";
 import fetch from "node-fetch";
-import * as cheerio from "cheerio";
 
 const app = express();
 app.use(cors());
 
 const PORT = process.env.PORT || 3000;
 
-// Helper function to scrape HYRESULT
-async function scrapeHyResult(url) {
+// Helper to fetch from HYRESULT API
+async function fetchCategory(event, gender, group) {
+  const url = `https://api.hyresult.com/api/rankings/s8-2025-${event}-hyrox-${gender}?ag=${group}`;
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to fetch: ${res.statusText}`);
-  const html = await res.text();
-  const $ = cheerio.load(html);
+  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+  const json = await res.json();
 
-  const results = [];
-  $("table tbody tr").each((i, row) => {
-    const cols = $(row).find("td");
-    const rank = $(cols[0]).text().trim();
-    const name = $(cols[2]).text().trim();
-    const time = $(cols[6]).text().trim();
+  // Normalize
+  const top3 = (json.results || []).slice(0, 3).map(r => ({
+    rank: r.rank,
+    name: r.name || r.fullName,
+    time: r.time || r.resultTime,
+  }));
 
-    if (rank && name && time) {
-      results.push({ rank, name, time });
-    }
-  });
-
-  return results.slice(0, 3);
+  return top3;
 }
 
-app.get("/api/health", (_, res) => {
-  res.json({ status: "ok", source: "HYRESULT.com", version: "1.0" });
-});
-
-// ✅ Example: /api/scrape?event=toronto-2025
 app.get("/api/scrape", async (req, res) => {
   try {
-    const event = req.query.event;
-    if (!event) return res.status(400).json({ error: "Missing ?event parameter" });
-
+    const event = req.query.event || "toronto";
     const categories = [
       { gender: "men", group: "45-49" },
       { gender: "men", group: "50-54" },
@@ -55,29 +42,29 @@ app.get("/api/scrape", async (req, res) => {
       { gender: "women", group: "70" },
     ];
 
-    const allData = [];
+    const results = [];
 
     for (const cat of categories) {
-      const url = `https://www.hyresult.com/ranking/s8-2025-${event}-hyrox-${cat.gender}?ag=${cat.group}`;
-      console.log(`🔍 Scraping ${url}`);
       try {
-        const athletes = await scrapeHyResult(url);
-        allData.push({
+        const athletes = await fetchCategory(event, cat.gender, cat.group);
+        results.push({
           category: `${cat.gender.toUpperCase()} ${cat.group}`,
           athletes,
         });
       } catch (err) {
-        console.warn(`⚠️ Failed for ${cat.gender} ${cat.group}: ${err.message}`);
+        console.warn(`⚠️ Failed ${cat.gender} ${cat.group}: ${err.message}`);
       }
     }
 
-    res.json({
-      eventName: `HYROX ${event}`,
-      categories: allData,
-    });
+    res.json({ eventName: `HYROX ${event}`, categories: results });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
-app.listen(PORT, () => console.log(`✅ HYRESULT scraper running on port ${PORT}`));
+app.get("/api/health", (_, res) => {
+  res.json({ status: "ok", source: "hyresult.com API", version: "3.0" });
+});
+
+app.listen(PORT, () => console.log(`✅ HYRESULT API scraper running on ${PORT}`));
