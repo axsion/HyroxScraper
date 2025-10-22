@@ -5,23 +5,27 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 app.get("/api/scrape", async (req, res) => {
-  try {
-    const eventUrl = req.query.eventUrl || "https://www.hyresult.com/ranking/s8-2025-toronto-hyrox-men?ag=45-49";
-    console.log(`🔍 Opening ${eventUrl}`);
+  const eventUrl = req.query.eventUrl || "https://www.hyresult.com/ranking/s8-2025-toronto-hyrox-men?ag=45-49";
 
-    // Launch Puppeteer in headless mode (Render-friendly)
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  console.log(`🔍 Opening ${eventUrl}`);
+  let browser;
+  try {
+    browser = await puppeteer.launch({
+      headless: "new", // modern headless mode
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--no-zygote",
+      ],
     });
 
     const page = await browser.newPage();
     await page.goto(eventUrl, { waitUntil: "networkidle2", timeout: 0 });
 
-    // Wait until the first row of the table appears
     await page.waitForSelector("table tbody tr");
 
-    // Extract data from table rows
     const athletes = await page.evaluate(() => {
       const rows = Array.from(document.querySelectorAll("table tbody tr"));
       return rows.slice(0, 100).map(row => {
@@ -35,8 +39,6 @@ app.get("/api/scrape", async (req, res) => {
       });
     });
 
-    await browser.close();
-
     const result = {
       eventName: "HYROX Toronto 2025",
       category: "MEN 45-49",
@@ -48,9 +50,11 @@ app.get("/api/scrape", async (req, res) => {
   } catch (err) {
     console.error("❌ Scrape error:", err);
     res.status(500).json({ error: err.message });
+  } finally {
+    if (browser) await browser.close();
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`✅ HYRESULT Puppeteer scraper running on ${PORT}`);
+  console.log(`✅ HYRESULT Puppeteer scraper running on port ${PORT}`);
 });
