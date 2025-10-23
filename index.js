@@ -1,6 +1,10 @@
 /**
- * HYROX Podium Scraper v3 — One Event per Request (Solo Master Categories)
- * October 2025
+ * HYROX Podium Scraper v6 — Full Season Scraper (Solo Masters)
+ * Frederic Bergeron | October 2025
+ *
+ * ✅ Scrapes all ?ag=45-49 ... 75-79 for each event
+ * ✅ Fixes "Analyze" issue by detecting time pattern cell
+ * ✅ Adds /api/scrape-all to crawl entire season with rate limiting
  */
 
 import express from "express";
@@ -12,11 +16,11 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 const DATA_FILE = path.resolve("./data/last-run.json");
 
-/**
- * 🗺️ All known SOLO event URLs for 2025 season
- * (Men + Women only, no doubles)
- */
-const EVENT_URLS = [
+/* -------------------------------------------------------------------------- */
+/*                          1. Base Event URLs (Solo)                         */
+/* -------------------------------------------------------------------------- */
+
+const EVENT_BASE_URLS = [
   "https://www.hyresult.com/ranking/s8-2025-valencia-hyrox-men",
   "https://www.hyresult.com/ranking/s8-2025-valencia-hyrox-women",
   "https://www.hyresult.com/ranking/s8-2025-gdansk-hyrox-men",
@@ -77,11 +81,17 @@ const EVENT_URLS = [
   "https://www.hyresult.com/ranking/s7-2025-heerenveen-hyrox-women"
 ];
 
-/* -------------------- API -------------------- */
+/* -------------------------------------------------------------------------- */
+/*                         2. Master Age Groups                               */
+/* -------------------------------------------------------------------------- */
+
+const AGE_GROUPS = ["45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79"];
+
+/* -------------------------------------------------------------------------- */
+/*                                 3. Routes                                  */
+/* -------------------------------------------------------------------------- */
 
 app.get("/api/health", (_, res) => res.json({ ok: true }));
-
-app.get("/api/events", (_, res) => res.json({ count: EVENT_URLS.length, events: EVENT_URLS }));
 
 app.get("/api/last-run", (_, res) => {
   if (fs.existsSync(DATA_FILE)) return res.json(JSON.parse(fs.readFileSync(DATA_FILE, "utf8")));
@@ -89,57 +99,104 @@ app.get("/api/last-run", (_, res) => {
 });
 
 /**
- * 🧠 Scrape one event: /api/scrape?url=<eventUrl>
+ * /api/scrape?url=<base_event_url>
+ * Iterates through all Master ?ag categories automatically
  */
 app.get("/api/scrape", async (req, res) => {
-  const url = req.query.url;
-  if (!url) return res.status(400).json({ error: "Missing ?url=" });
-  if (!EVENT_URLS.includes(url)) return res.status(400).json({ error: "Unknown event URL" });
+  const baseUrl = req.query.url;
+  if (!baseUrl) return res.status(400).json({ error: "Missing ?url=" });
 
-  const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
-  try {
-    const data = await scrapeEvent(page, url);
-    await browser.close();
-
-    // Cache event
-    let cache = { scrapedAt: new Date().toISOString(), events: [] };
-    if (fs.existsSync(DATA_FILE)) {
-      cache = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-    }
-    cache.events = cache.events.filter(e => e.url !== url);
-    cache.events.push(data);
-    fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-    fs.writeFileSync(DATA_FILE, JSON.stringify(cache, null, 2));
-
-    res.json(data);
-  } catch (err) {
-    await browser.close();
-    res.status(500).json({ error: err.message });
-  }
+  const results = await scrapeEvent(baseUrl);
+  res.json({ count: results.length, events: results });
 });
 
-/* -------------------- Scraper Logic -------------------- */
-async function scrapeEvent(page, url) {
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
-  const eventName = await page.title();
+/**
+ * /api/scrape-all?limit=N
+ * Sequentially scrapes all events (and all Masters) with safe rate limiting
+ */
+app.get("/api/scrape-all", async (req, res) => {
+  const limit = Number(req.query.limit) || EVENT_BASE_URLS.length;
+  const subset = EVENT_BASE_URLS.slice(0, limit);
+  const allResults = [];
 
-  const podium = await page.$$eval("table tbody tr", rows =>
-    Array.from(rows)
-      .slice(0, 3)
-      .map(r => {
-        const tds = r.querySelectorAll("td");
-        return {
-          rank: tds[0]?.innerText.trim(),
-          name: tds[1]?.innerText.trim(),
-          ageGroup: tds[2]?.innerText.trim(),
-          time: tds[tds.length - 1]?.innerText.trim()
-        };
-      })
-  );
+  for (const url of subset) {
+    console.log(`🏁 Scraping base event: ${url}`);
+    const results = await scrapeEvent(url);
+    allResults.push(...results);
+    await delay(5000); // wait 5 seconds between events to avoid rate-limit
+  }
 
-  const gender = /WOMEN/i.test(eventName) ? "Women" : "Men";
-  return { eventName, gender, url, podium };
+  // Save everything
+  const cache = { scrapedAt: new Date().toISOString(), events: allResults };
+  fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
+  fs.writeFileSync(DATA_FILE, JSON.stringify(cache, null, 2));
+
+  res.json({ totalEvents: allResults.length, message: "✅ Full season scrape complete" });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                               4. Scraper                                   */
+/* -------------------------------------------------------------------------- */
+
+async function scrapeEvent(baseUrl) {
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  const results = [];
+
+  try {
+    for (const ag of AGE_GROUPS) {
+      const fullUrl = `${baseUrl}?ag=${ag}`;
+      console.log(`🔎 Scraping ${fullUrl}`);
+      const data = await scrapeCategory(page, fullUrl, ag);
+      if (data) results.push(data);
+    }
+  } catch (err) {
+    console.error(`❌ Error scraping ${baseUrl}:`, err);
+  } finally {
+    await browser.close();
+  }
+  return results;
 }
 
-app.listen(PORT, () => console.log(`✅ HYROX Scraper running on port ${PORT}`));
+async function scrapeCategory(page, url, ageGroup) {
+  try {
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+    const eventName = await page.title();
+
+    const podium = await page.$$eval("table tbody tr", rows =>
+      Array.from(rows)
+        .slice(0, 3)
+        .map(r => {
+          const tds = Array.from(r.querySelectorAll("td"));
+          const rank = tds[0]?.innerText.trim();
+          const name = tds[1]?.innerText.trim();
+          const timeCell = tds.find(td => /\d{1,2}:\d{2}:\d{2}|\d{1,2}:\d{2}/.test(td.innerText));
+          const time = timeCell ? timeCell.innerText.trim() : "";
+          return { rank, name, ageGroup, time };
+        })
+        .filter(r => r.name && r.time)
+    );
+
+    if (!podium.length) return null;
+
+    const gender = /WOMEN/i.test(eventName) ? "Women" : "Men";
+    return { eventName, gender, category: ageGroup, url, podium };
+  } catch (err) {
+    console.log(`⚠️ Failed ${url}: ${err.message}`);
+    return null;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*                            5. Utility functions                            */
+/* -------------------------------------------------------------------------- */
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                6. Start App                                */
+/* -------------------------------------------------------------------------- */
+
+app.listen(PORT, () => console.log(`✅ HYROX Masters Scraper running on port ${PORT}`));
