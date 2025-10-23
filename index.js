@@ -154,6 +154,11 @@ async function scrapeEvent(page, baseUrl) {
 async function scrapeCategory(page, url, ageGroup) {
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 90000 });
+
+    // 🔍 TEMP: show the first 5000 characters of the HTML in Render logs
+    const html = await page.content();
+    console.log("HTML preview:", html.substring(0, 5000));
+
     const eventName = await page.title();
 
     const podium = await page.$$eval("table tbody tr", rows =>
