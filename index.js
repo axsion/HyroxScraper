@@ -6,131 +6,96 @@ import { chromium } from "playwright";
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Paths for local data
+// === Local data folder ===
 const dataDir = path.join(process.cwd(), "data");
-const listFile = path.join(dataDir, "events-list.json");
 const resultFile = path.join(dataDir, "last-run.json");
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-// --- Logger helper
-const logWrap = (logs, msg) => {
+// === Static list of base events ===
+// (NO "-men" or "-women" here — script adds those automatically)
+const baseEvents = [
+  "https://www.hyresult.com/ranking/s8-2025-valencia-hyrox",
+  "https://www.hyresult.com/ranking/s8-2025-gdansk-hyrox",
+  "https://www.hyresult.com/ranking/s8-2025-geneva-hyrox",
+  "https://www.hyresult.com/ranking/s8-2025-hamburg-hyrox",
+  "https://www.hyresult.com/ranking/s8-2025-toronto-hyrox",
+  "https://www.hyresult.com/ranking/s8-2025-oslo-hyrox",
+  "https://www.hyresult.com/ranking/s8-2025-rome-hyrox",
+  "https://www.hyresult.com/ranking/s8-2025-boston-hyrox",
+  "https://www.hyresult.com/ranking/s8-2025-maastricht-hyrox",
+  "https://www.hyresult.com/ranking/s8-2025-sao-paulo-hyrox",
+  "https://www.hyresult.com/ranking/s8-2025-acapulco-hyrox",
+  "https://www.hyresult.com/ranking/s8-2025-perth-hyrox",
+  "https://www.hyresult.com/ranking/s8-2025-mumbai-hyrox",
+  "https://www.hyresult.com/ranking/s8-2025-beijing-hyrox",
+  "https://www.hyresult.com/ranking/s8-2025-yokohama-hyrox",
+  "https://www.hyresult.com/ranking/s8-2025-hong-kong-hyrox",
+  "https://www.hyresult.com/ranking/s8-2025-cape-town-hyrox",
+  "https://www.hyresult.com/ranking/s8-2025-new-delhi-hyrox",
+  "https://www.hyresult.com/ranking/s8-2025-abu-dhabi-hyrox",
+  "https://www.hyresult.com/ranking/s8-2025-sydney-hyrox",
+  "https://www.hyresult.com/ranking/s8-2025-singapore-hyrox",
+  "https://www.hyresult.com/ranking/s7-2025-new-york-hyrox",
+  "https://www.hyresult.com/ranking/s7-2025-rimini-hyrox",
+  "https://www.hyresult.com/ranking/s7-2025-cardiff-hyrox",
+  "https://www.hyresult.com/ranking/s7-2025-riga-hyrox",
+  "https://www.hyresult.com/ranking/s7-2025-bangkok-hyrox",
+  "https://www.hyresult.com/ranking/s7-2025-berlin-hyrox",
+  "https://www.hyresult.com/ranking/s7-2025-incheon-hyrox",
+  "https://www.hyresult.com/ranking/s7-2025-heerenveen-hyrox"
+];
+
+// === Logger helper ===
+const log = (logs, msg) => {
   const line = `${new Date().toISOString().split("T")[1].split(".")[0]} - ${msg}`;
   console.log(line);
   logs.push(line);
 };
 
-// --- Health check
+// === Health check ===
 app.get("/api/health", (_, res) => res.json({ ok: true }));
 
-// ===================================================================
-// STEP 1 — Diagnostic version: Extract all event links (debug)
-// ===================================================================
-app.get("/api/scrape-event-list", async (_, res) => {
-  let browser;
+// === Scraper ===
+app.get("/api/scrape-all", async (req, res) => {
   const logs = [];
+  let browser;
+  const limit = req.query.limit ? parseInt(req.query.limit) : baseEvents.length;
+
   try {
-    logWrap(logs, "🚀 Launching browser...");
+    log(logs, "🚀 Launching Playwright...");
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
-    await page.setViewportSize({ width: 1400, height: 900 });
 
-    logWrap(logs, "🔍 Visiting HYROX past events...");
-    await page.goto("https://www.hyresult.com/events?tab=past", {
-      waitUntil: "domcontentloaded",
-      timeout: 0
-    });
-
-    // Scroll to force React to render
-    logWrap(logs, "⬇️ Scrolling to trigger full hydration...");
-    await page.evaluate(async () => {
-      const sleep = ms => new Promise(r => setTimeout(r, ms));
-      for (let i = 0; i < 30; i++) {
-        window.scrollTo(0, document.body.scrollHeight);
-        await sleep(800);
-      }
-    });
-
-    // Capture all links on the page
-    const allLinks = await page.evaluate(() =>
-      Array.from(document.querySelectorAll("a")).map(a => ({
-        text: a.textContent?.trim(),
-        href: a.href
-      }))
-    );
-
-    logWrap(logs, `🔗 Found ${allLinks.length} total links.`);
-    const rankingLinks = allLinks.filter(a => a.href.includes("/ranking/"));
-
-    // Log first 10 links to Render logs
-    logWrap(
-      logs,
-      `🧭 First 10 links:\n${allLinks
-        .slice(0, 10)
-        .map(a => `${a.text} → ${a.href}`)
-        .join("\n")}`
-    );
-
-    if (!rankingLinks.length) {
-      throw new Error(
-        "No ranking links found — check Render logs for printed link patterns."
-      );
+    // Load previous run data if available
+    let previousData = { events: [] };
+    if (fs.existsSync(resultFile)) {
+      previousData = JSON.parse(fs.readFileSync(resultFile, "utf8"));
     }
+    const existingUrls = new Set(previousData.events.map(e => e.url));
 
-    fs.writeFileSync(listFile, JSON.stringify(rankingLinks, null, 2));
-    logWrap(logs, `💾 Saved ${rankingLinks.length} events to ${listFile}`);
+    // Build new list (both genders)
+    const fullUrls = baseEvents.flatMap(base => [
+      { gender: "men", url: `${base}-men` },
+      { gender: "women", url: `${base}-women` }
+    ]);
 
-    res.json({
-      ok: true,
-      count: rankingLinks.length,
-      events: rankingLinks.slice(0, 10),
-      log: logs
-    });
-  } catch (err) {
-    logWrap(logs, `❌ Fatal: ${err.message}`);
-    res.status(500).json({ error: err.message, log: logs });
-  } finally {
-    if (browser) await browser.close();
-  }
-});
+    const newUrls = fullUrls.filter(e => !existingUrls.has(e.url)).slice(0, limit);
 
-// ===================================================================
-// STEP 2 — Scrape podiums for events in stored list
-// ===================================================================
-app.get("/api/scrape-from-list", async (_, res) => {
-  if (!fs.existsSync(listFile)) {
-    return res.status(404).json({ error: "Run /api/scrape-event-list first." });
-  }
-
-  const allEvents = JSON.parse(fs.readFileSync(listFile, "utf8"));
-  let previousData = { events: [] };
-  if (fs.existsSync(resultFile)) {
-    previousData = JSON.parse(fs.readFileSync(resultFile, "utf8"));
-  }
-
-  const existingUrls = new Set(previousData.events.map(e => e.url));
-  const newEvents = allEvents.filter(ev => !existingUrls.has(ev.href));
-
-  const logs = [];
-  const results = [...previousData.events];
-  let browser;
-
-  try {
-    if (!newEvents.length) {
-      logWrap(logs, "✅ No new events to scrape. Already up-to-date.");
+    if (!newUrls.length) {
+      log(logs, "✅ No new events — already up-to-date.");
       return res.json({ ok: true, message: "No new events", log: logs });
     }
 
-    logWrap(logs, `🚀 Launching browser for ${newEvents.length} new events...`);
-    browser = await chromium.launch({ headless: true });
+    log(logs, `📅 Found ${newUrls.length} new events to scrape.`);
 
-    for (const [i, ev] of newEvents.entries()) {
+    for (const [i, ev] of newUrls.entries()) {
       try {
-        const page = await browser.newPage();
-        logWrap(logs, `(${i + 1}/${newEvents.length}) 🏁 Scraping ${ev.name}`);
-        await page.goto(ev.href, { waitUntil: "domcontentloaded", timeout: 0 });
+        log(logs, `(${i + 1}/${newUrls.length}) 🏁 Scraping ${ev.url}`);
+        await page.goto(ev.url, { waitUntil: "domcontentloaded", timeout: 0 });
         await page.waitForSelector("table tbody tr", { timeout: 20000 });
 
-        const podium = await page.evaluate(() => {
+        const eventName = await page.title();
+        const athletes = await page.evaluate(() => {
           const rows = Array.from(document.querySelectorAll("table tbody tr"));
           return rows.slice(0, 3).map(row => {
             const cells = row.querySelectorAll("td");
@@ -143,90 +108,44 @@ app.get("/api/scrape-from-list", async (_, res) => {
           });
         });
 
-        results.push({ event: ev.name, url: ev.href, podium });
-        await page.close();
-      } catch (e) {
-        logWrap(logs, `⚠️ Failed ${ev.name}: ${e.message}`);
+        previousData.events.push({
+          eventName,
+          gender: ev.gender,
+          url: ev.url,
+          podium: athletes
+        });
+      } catch (err) {
+        log(logs, `⚠️ Failed ${ev.url}: ${err.message}`);
       }
     }
 
-    fs.writeFileSync(
-      resultFile,
-      JSON.stringify({ date: new Date().toISOString(), events: results }, null, 2)
-    );
+    fs.writeFileSync(resultFile, JSON.stringify(previousData, null, 2));
+    log(logs, `💾 Saved ${previousData.events.length} events total`);
 
-    logWrap(logs, `💾 Updated dataset with ${results.length} total events`);
-    res.json({ ok: true, newCount: newEvents.length, total: results.length, log: logs });
+    res.json({
+      ok: true,
+      total: previousData.events.length,
+      scrapedNow: newUrls.length,
+      log
+    });
   } catch (err) {
-    logWrap(logs, `❌ Fatal: ${err.message}`);
+    log(logs, `❌ Fatal error: ${err.message}`);
     res.status(500).json({ error: err.message, log: logs });
   } finally {
     if (browser) await browser.close();
   }
 });
 
-// ===================================================================
-// STEP 3 — Data inspection endpoints
-// ===================================================================
-app.get("/api/event-list", (_, res) => {
-  if (!fs.existsSync(listFile)) {
-    return res.status(404).json({ error: "No events-list found" });
-  }
-  res.json(JSON.parse(fs.readFileSync(listFile, "utf8")));
-});
-
+// === View stored data ===
 app.get("/api/last-run", (_, res) => {
   if (!fs.existsSync(resultFile)) {
-    return res.status(404).json({ error: "No last-run data found" });
+    return res.status(404).json({ error: "No previous run found" });
   }
-  res.json(JSON.parse(fs.readFileSync(resultFile, "utf8")));
+  const data = JSON.parse(fs.readFileSync(resultFile, "utf8"));
+  res.json(data);
 });
 
-// ===================================================================
-// STEP 4 — Single event scraper (testing)
-// ===================================================================
-app.get("/api/scrape", async (req, res) => {
-  const eventUrl = req.query.url;
-  if (!eventUrl) return res.status(400).json({ error: "Missing ?url parameter" });
-
-  let browser;
-  const logs = [];
-
-  try {
-    logWrap(logs, "🚀 Launching Playwright...");
-    browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage();
-
-    logWrap(logs, `🔍 Opening ${eventUrl}`);
-    await page.goto(eventUrl, { waitUntil: "domcontentloaded", timeout: 0 });
-    await page.waitForSelector("table tbody tr", { timeout: 20000 });
-
-    const eventName = await page.title();
-    const athletes = await page.evaluate(() => {
-      const rows = Array.from(document.querySelectorAll("table tbody tr"));
-      return rows.slice(0, 3).map(row => {
-        const cells = row.querySelectorAll("td");
-        return {
-          rank: cells[1]?.innerText.trim(),
-          name: cells[3]?.innerText.trim(),
-          ageGroup: cells[4]?.innerText.trim(),
-          time: cells[5]?.innerText.trim()
-        };
-      });
-    });
-
-    res.json({ eventName, podium: athletes, log: logs });
-  } catch (err) {
-    logWrap(logs, `❌ Scrape error: ${err.message}`);
-    res.status(500).json({ error: err.message, log: logs });
-  } finally {
-    if (browser) await browser.close();
-  }
-});
-
-// ===================================================================
-// Start server
-// ===================================================================
+// === Start server ===
 app.listen(PORT, () =>
-  console.log(`✅ HYROX Season Scraper running on port ${PORT}`)
+  console.log(`✅ HYROX Dual-Gender Scraper running on port ${PORT}`)
 );
