@@ -1,12 +1,11 @@
 /**
- * HYROX Scraper v10 — Stable, Memory-Safe, Correct Selectors
+ * HYROX Scraper v12 — Stable + Timeout Safe
  * Frederic Bergeron | October 2025
  *
- * ✅ Stateless: no file system writes
- * ✅ Works on Render free tier
- * ✅ Extracts podiums for all Masters age groups (45-79)
- * ✅ Tested selector verified on hyresult.com
- * ✅ Ready for Google Sheets integration
+ * ✅ Skips missing age-group pages automatically
+ * ✅ Extracts Masters podiums accurately
+ * ✅ Stateless: works fine on Render free tier
+ * ✅ Memory-safe: one browser per batch
  */
 
 import express from "express";
@@ -88,15 +87,10 @@ const AGE_GROUPS = ["45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79
 
 app.get("/api/health", (_, res) => res.json({ ok: true }));
 
-/**
- * /api/scrape-batch?offset=0
- * Runs 10 base events sequentially with one browser instance
- */
 app.get("/api/scrape-batch", async (req, res) => {
-  const offset = parseInt(req.query.offset || "0");
+  const offset = parseInt(req.query.offset || "0", 10);
   const limit = 10;
   const subset = EVENT_BASE_URLS.slice(offset, offset + limit);
-
   console.log(`🚀 Starting batch from index ${offset}`);
 
   const browser = await chromium.launch({
@@ -110,7 +104,6 @@ app.get("/api/scrape-batch", async (req, res) => {
   });
   const page = await browser.newPage();
 
-  // Pretend to be a normal browser
   await page.setExtraHTTPHeaders({
     "User-Agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
@@ -132,9 +125,6 @@ app.get("/api/scrape-batch", async (req, res) => {
   });
 });
 
-/**
- * /api/scrape?url=<single_event_url>
- */
 app.get("/api/scrape", async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "Missing ?url=" });
@@ -167,7 +157,7 @@ app.get("/api/scrape", async (req, res) => {
 async function scrapeEvent(page, baseUrl) {
   const results = [];
   for (const ag of AGE_GROUPS) {
-    const fullUrl = `${baseUrl}?ag=${ag}`;
+    const fullUrl = baseUrl.includes("?ag=") ? baseUrl : `${baseUrl}?ag=${ag}`;
     console.log(`🔎 Scraping ${fullUrl}`);
     const data = await scrapeCategory(page, fullUrl, ag);
     if (data) results.push(data);
@@ -180,7 +170,7 @@ async function scrapeCategory(page, url, ageGroup) {
     console.log(`🔎 Visiting ${url}`);
     await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
 
-    // ✅ Check if table exists quickly; skip if not found
+    // ✅ Skip non-existent pages gracefully
     const tableExists = await page.$("table tr td:nth-child(4)");
     if (!tableExists) {
       console.log(`⚠️ No results table for ${url} — skipping.`);
@@ -214,37 +204,6 @@ async function scrapeCategory(page, url, ageGroup) {
     const gender = /WOMEN/i.test(eventName) ? "Women" : "Men";
     console.log(`✅ ${eventName} (${ageGroup}) → ${podium.length} rows`);
     return { eventName, gender, category: ageGroup, url, podium };
-
-  } catch (err) {
-    console.log(`❌ Error scraping ${url}: ${err.message}`);
-    return null;
-  }
-}
-
-
-    if (!podium.length) {
-      console.log(`⚠️ Empty table for ${url}`);
-      return null;
-    }
-
-    const gender = /WOMEN/i.test(eventName) ? "Women" : "Men";
-    console.log(`✅ ${eventName} (${ageGroup}) → ${podium.length} rows`);
-    return { eventName, gender, category: ageGroup, url, podium };
-  } catch (err) {
-    console.log(`❌ Error scraping ${url}: ${err.message}`);
-    return null;
-  }
-}
-
-
-    if (!podium.length) {
-      console.log(`⚠️ No podium data found for ${url}`);
-      return null;
-    }
-
-    const gender = /WOMEN/i.test(eventName) ? "Women" : "Men";
-    console.log(`✅ ${eventName} (${ageGroup}) → ${podium.length} rows`);
-    return { eventName, gender, category: ageGroup, url, podium };
   } catch (err) {
     console.log(`❌ Error scraping ${url}: ${err.message}`);
     return null;
@@ -256,5 +215,5 @@ async function scrapeCategory(page, url, ageGroup) {
 /* -------------------------------------------------------------------------- */
 
 app.listen(PORT, () =>
-  console.log(`✅ HYROX Scraper v10 running on port ${PORT}`)
+  console.log(`✅ HYROX Scraper v12 running on port ${PORT}`)
 );
