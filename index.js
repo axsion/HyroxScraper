@@ -178,24 +178,47 @@ async function scrapeEvent(page, baseUrl) {
 async function scrapeCategory(page, url, ageGroup) {
   try {
     console.log(`🔎 Visiting ${url}`);
-    await page.goto(url, { waitUntil: "networkidle", timeout: 90000 });
-    await page.waitForSelector("table tr td:nth-child(4)", { timeout: 20000 });
+    await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
+
+    // ✅ Check if table exists quickly; skip if not found
+    const tableExists = await page.$("table tr td:nth-child(4)");
+    if (!tableExists) {
+      console.log(`⚠️ No results table for ${url} — skipping.`);
+      return null;
+    }
 
     const eventName = await page.title();
 
-const podium = await page.$$eval("table tr", (rows, ageGroup) =>
-  Array.from(rows)
-    .slice(0, 3)
-    .map(r => {
-      const tds = Array.from(r.querySelectorAll("td"));
-      const rank = tds[1]?.innerText.trim();
-      const name = tds[3]?.innerText.trim();
-      const detectedAge = tds[4]?.innerText.trim();
-      const time = tds[5]?.innerText.trim();
-      return { rank, name, ageGroup: detectedAge || ageGroup, time };
-    })
-    .filter(r => r.name && r.time),
-ageGroup);
+    const podium = await page.$$eval(
+      "table tr",
+      (rows, ageGroup) =>
+        Array.from(rows)
+          .slice(0, 3)
+          .map((r) => {
+            const tds = Array.from(r.querySelectorAll("td"));
+            const rank = tds[1]?.innerText.trim();
+            const name = tds[3]?.innerText.trim();
+            const detectedAge = tds[4]?.innerText.trim();
+            const time = tds[5]?.innerText.trim();
+            return { rank, name, ageGroup: detectedAge || ageGroup, time };
+          })
+          .filter((r) => r.name && r.time),
+      ageGroup
+    );
+
+    if (!podium.length) {
+      console.log(`⚠️ Empty table for ${url}`);
+      return null;
+    }
+
+    const gender = /WOMEN/i.test(eventName) ? "Women" : "Men";
+    console.log(`✅ ${eventName} (${ageGroup}) → ${podium.length} rows`);
+    return { eventName, gender, category: ageGroup, url, podium };
+  } catch (err) {
+    console.log(`❌ Error scraping ${url}: ${err.message}`);
+    return null;
+  }
+}
 
 
     if (!podium.length) {
