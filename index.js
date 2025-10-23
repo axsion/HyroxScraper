@@ -177,13 +177,15 @@ async function scrapeEvent(page, baseUrl) {
 
 async function scrapeCategory(page, url, ageGroup) {
   try {
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 90000 });
+    console.log(`🔎 Visiting ${url}`);
+    await page.goto(url, { waitUntil: "networkidle", timeout: 90000 });
+    await page.waitForSelector("table tr td:nth-child(4)", { timeout: 20000 });
+
     const eventName = await page.title();
 
-    // ✅ Fixed selector logic based on debug result
     const podium = await page.$$eval("table tr", rows =>
       Array.from(rows)
-        .slice(0, 3) // Top 3 only
+        .slice(0, 3)
         .map(r => {
           const tds = Array.from(r.querySelectorAll("td"));
           const rank = tds[1]?.innerText.trim();
@@ -195,12 +197,16 @@ async function scrapeCategory(page, url, ageGroup) {
         .filter(r => r.name && r.time)
     );
 
-    if (!podium.length) return null;
+    if (!podium.length) {
+      console.log(`⚠️ No podium data found for ${url}`);
+      return null;
+    }
 
     const gender = /WOMEN/i.test(eventName) ? "Women" : "Men";
+    console.log(`✅ ${eventName} (${ageGroup}) → ${podium.length} rows`);
     return { eventName, gender, category: ageGroup, url, podium };
   } catch (err) {
-    console.log(`⚠️ Failed ${url}: ${err.message}`);
+    console.log(`❌ Error scraping ${url}: ${err.message}`);
     return null;
   }
 }
