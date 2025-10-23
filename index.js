@@ -1,11 +1,11 @@
 /**
- * HYROX Podium Scraper v8 — Stateless + Batch Safe
+ * HYROX Podium Scraper v9 — Memory-Safe Stateless Scraper
  * Frederic Bergeron | October 2025
  *
- * ✅ Scrapes Masters categories (?ag=45-49 ... ?ag=75-79)
- * ✅ Stateless: returns all results immediately (no local cache)
- * ✅ Supports batch requests (10 events per call)
- * ✅ Designed for integration with Google Sheets (no Render storage needed)
+ * ✅ Uses one Playwright browser per batch (not per event)
+ * ✅ Sequential scraping → safe for Render free tier
+ * ✅ Stateless JSON output (no caching)
+ * ✅ Works with Google Sheets batch importer
  */
 
 import express from "express";
@@ -14,10 +14,7 @@ import { chromium } from "playwright";
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-/* -------------------------------------------------------------------------- */
-/*                            1. Base Event URLs                              */
-/* -------------------------------------------------------------------------- */
-
+// --- Event URLs (men/women) ---
 const EVENT_BASE_URLS = [
   "https://www.hyresult.com/ranking/s8-2025-valencia-hyrox-men",
   "https://www.hyresult.com/ranking/s8-2025-valencia-hyrox-women",
@@ -79,80 +76,84 @@ const EVENT_BASE_URLS = [
   "https://www.hyresult.com/ranking/s7-2025-heerenveen-hyrox-women"
 ];
 
-/* -------------------------------------------------------------------------- */
-/*                         2. Masters Categories                              */
-/* -------------------------------------------------------------------------- */
-
+// Masters categories
 const AGE_GROUPS = ["45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79"];
 
 /* -------------------------------------------------------------------------- */
-/*                             3. Express Routes                              */
+/*                                  ROUTES                                    */
 /* -------------------------------------------------------------------------- */
 
 app.get("/api/health", (_, res) => res.json({ ok: true }));
 
 /**
  * /api/scrape-batch?offset=0
- * → Runs 10 events at a time (to avoid Render timeout)
+ * → Runs 10 base events sequentially with one browser instance
  */
 app.get("/api/scrape-batch", async (req, res) => {
   const offset = parseInt(req.query.offset || "0");
   const limit = 10;
   const subset = EVENT_BASE_URLS.slice(offset, offset + limit);
 
-  console.log(`🚀 Scraping batch from index ${offset} (${subset.length} events)`);
+  console.log(`🚀 Starting memory-safe batch from index ${offset}`);
 
-  const allResults = [];
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"]
+  });
+  const page = await browser.newPage();
 
+  const results = [];
   for (const baseUrl of subset) {
-    const results = await scrapeEvent(baseUrl);
-    allResults.push(...results);
-    await delay(2000);
+    const eventData = await scrapeEvent(page, baseUrl);
+    results.push(...eventData);
   }
+
+  await browser.close();
 
   res.json({
     scrapedAt: new Date().toISOString(),
-    count: allResults.length,
+    count: results.length,
     nextOffset: offset + limit < EVENT_BASE_URLS.length ? offset + limit : null,
-    events: allResults
+    events: results
   });
 });
 
 /**
  * /api/scrape?url=<single_event_url>
- * → Scrapes one event (all Masters categories)
  */
 app.get("/api/scrape", async (req, res) => {
-  const baseUrl = req.query.url;
-  if (!baseUrl) return res.status(400).json({ error: "Missing ?url=" });
+  const url = req.query.url;
+  if (!url) return res.status(400).json({ error: "Missing ?url=" });
 
-  const results = await scrapeEvent(baseUrl);
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"]
+  });
+  const page = await browser.newPage();
+  const results = await scrapeEvent(page, url);
+  await browser.close();
+
   res.json({ count: results.length, events: results });
 });
 
 /* -------------------------------------------------------------------------- */
-/*                           4. Scraper functions                             */
+/*                              SCRAPER LOGIC                                 */
 /* -------------------------------------------------------------------------- */
 
-async function scrapeEvent(baseUrl) {
-  const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
+async function scrapeEvent(page, baseUrl) {
   const results = [];
-
   for (const ag of AGE_GROUPS) {
     const fullUrl = `${baseUrl}?ag=${ag}`;
-    console.log(`🔎 Scraping ${fullUrl}`);
+    console.log(`🔎 ${fullUrl}`);
     const data = await scrapeCategory(page, fullUrl, ag);
     if (data) results.push(data);
   }
-
-  await browser.close();
   return results;
 }
 
 async function scrapeCategory(page, url, ageGroup) {
   try {
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 90000 });
     const eventName = await page.title();
 
     const podium = await page.$$eval("table tbody tr", rows =>
@@ -162,7 +163,7 @@ async function scrapeCategory(page, url, ageGroup) {
           const tds = Array.from(r.querySelectorAll("td"));
           const rank = tds[0]?.innerText.trim();
           const name = tds[1]?.innerText.trim();
-          const timeCell = tds.find(td => /\d{1,2}:\d{2}:\d{2}|\d{1,2}:\d{2}/.test(td.innerText));
+          const timeCell = tds.find(td => /\d{1,2}:\d{2}(:\d{2})?/.test(td.innerText));
           const time = timeCell ? timeCell.innerText.trim() : "";
           return { rank, name, ageGroup, time };
         })
@@ -180,13 +181,9 @@ async function scrapeCategory(page, url, ageGroup) {
 }
 
 /* -------------------------------------------------------------------------- */
-/*                               5. Utilities                                 */
+/*                               SERVER START                                 */
 /* -------------------------------------------------------------------------- */
 
-const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-
-/* -------------------------------------------------------------------------- */
-/*                               6. Startup                                   */
-/* -------------------------------------------------------------------------- */
-
-app.listen(PORT, () => console.log(`✅ HYROX Scraper v8 (Stateless) running on ${PORT}`));
+app.listen(PORT, () =>
+  console.log(`✅ HYROX Scraper v9 (Memory-Safe, Stateless) running on port ${PORT}`)
+);
