@@ -1,18 +1,23 @@
 /**
- * HYROX Scraper v13 — Stable + Timeout Safe + Retry
+ * HYROX Scraper v14 — Persistent + Two-Step flow for Google Sheets
  * Frederic Bergeron | October 2025
  *
- * ✅ Handles missing or slow pages gracefully
- * ✅ Extracts Masters podiums (45-79)
- * ✅ Stateless — perfect for Render free tier
- * ✅ Memory safe — single browser per batch
+ * ✅ Persists last results to /data/last-run.json
+ * ✅ Adds /api/scrape-batch-save for long scraping jobs
+ * ✅ Adds /api/last-run for instant read (Google Sheets)
+ * ✅ Timeout-safe & Render free-tier friendly
  */
 
 import express from "express";
+import fs from "fs";
+import path from "path";
 import { chromium } from "playwright";
 
 const app = express();
 const PORT = process.env.PORT || 10000;
+
+const DATA_DIR = path.resolve("./data");
+const LAST_RUN_FILE = path.join(DATA_DIR, "last-run.json");
 
 /* -------------------------------------------------------------------------- */
 /*                               EVENT URL LIST                               */
@@ -87,58 +92,70 @@ const AGE_GROUPS = ["45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79
 
 app.get("/api/health", (_, res) => res.json({ ok: true }));
 
-app.get("/api/scrape-batch", async (req, res) => {
+// 🟢 Step 1: Long scrape that saves results to disk
+app.get("/api/scrape-batch-save", async (req, res) => {
   const offset = parseInt(req.query.offset || "0", 10);
-  const limit = 10;
+  const limit = parseInt(req.query.limit || "10", 10);
   const subset = EVENT_BASE_URLS.slice(offset, offset + limit);
-  console.log(`🚀 Starting batch from index ${offset}`);
-
-  const browser = await chromium.launch({
-    headless: true,
-    args: [
-      "--no-sandbox",
-      "--disable-gpu",
-      "--disable-dev-shm-usage",
-      "--disable-blink-features=AutomationControlled"
-    ]
-  });
-
-  const page = await browser.newPage();
-  await page.setExtraHTTPHeaders({
-    "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
-  });
-
-  const results = [];
-  for (const baseUrl of subset) {
-    const eventData = await scrapeEvent(page, baseUrl);
-    results.push(...eventData);
-  }
-
-  await browser.close();
+  console.log(`🚀 Starting SAVE batch from index ${offset}`);
 
   res.json({
-    scrapedAt: new Date().toISOString(),
-    count: results.length,
-    nextOffset: offset + limit < EVENT_BASE_URLS.length ? offset + limit : null,
-    events: results
+    message: `🟡 Batch started (offset=${offset}, limit=${limit}) — results will be saved to /data/last-run.json`
   });
+
+  try {
+    const browser = await chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"]
+    });
+
+    const page = await browser.newPage();
+    await page.setExtraHTTPHeaders({
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+    });
+
+    const results = [];
+    for (const baseUrl of subset) {
+      const eventData = await scrapeEvent(page, baseUrl);
+      results.push(...eventData);
+    }
+
+    await browser.close();
+
+    const output = {
+      scrapedAt: new Date().toISOString(),
+      count: results.length,
+      nextOffset: offset + limit < EVENT_BASE_URLS.length ? offset + limit : null,
+      events: results
+    };
+
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(LAST_RUN_FILE, JSON.stringify(output, null, 2));
+    console.log(`✅ Saved ${results.length} events to last-run.json`);
+  } catch (err) {
+    console.error("❌ Error saving batch:", err);
+  }
 });
 
+// 🟢 Step 2: Fast endpoint for Google Sheets to read saved data
+app.get("/api/last-run", (req, res) => {
+  if (!fs.existsSync(LAST_RUN_FILE)) {
+    return res.status(404).json({ error: "No last-run data found" });
+  }
+  const data = JSON.parse(fs.readFileSync(LAST_RUN_FILE, "utf8"));
+  res.json(data);
+});
+
+// 🧪 For manual single-event testing
 app.get("/api/scrape", async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "Missing ?url=" });
 
   const browser = await chromium.launch({
     headless: true,
-    args: [
-      "--no-sandbox",
-      "--disable-gpu",
-      "--disable-dev-shm-usage",
-      "--disable-blink-features=AutomationControlled"
-    ]
+    args: ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"]
   });
-
   const page = await browser.newPage();
   await page.setExtraHTTPHeaders({
     "User-Agent":
@@ -173,18 +190,16 @@ async function scrapeCategory(page, url, ageGroup) {
     // 🕐 Attempt 1: standard navigation (max 25s)
     try {
       await page.goto(url, { waitUntil: "networkidle", timeout: 25000 });
-    } catch (navErr) {
-      console.log(`⚠️ Slow load for ${url}, retrying with lighter mode...`);
-      // 🕐 Attempt 2: fallback with domcontentloaded
+    } catch {
+      console.log(`⚠️ Slow load for ${url}, retrying...`);
       try {
         await page.goto(url, { waitUntil: "domcontentloaded", timeout: 25000 });
-      } catch (finalErr) {
-        console.log(`⏩ Giving up on ${url} (slow/no response).`);
+      } catch {
+        console.log(`⏩ Skipped (slow/no response): ${url}`);
         return null;
       }
     }
 
-    // ✅ Check if table exists quickly; skip if not found
     const tableExists = await page.$("table tr td:nth-child(4)");
     if (!tableExists) {
       console.log(`⚠️ No results table for ${url} — skipping.`);
@@ -192,7 +207,6 @@ async function scrapeCategory(page, url, ageGroup) {
     }
 
     const eventName = await page.title();
-
     const podium = await page.$$eval(
       "table tr",
       (rows, ageGroup) =>
@@ -229,5 +243,5 @@ async function scrapeCategory(page, url, ageGroup) {
 /* -------------------------------------------------------------------------- */
 
 app.listen(PORT, () =>
-  console.log(`✅ HYROX Scraper v13 running on port ${PORT}`)
+  console.log(`✅ HYROX Scraper v14 running on port ${PORT}`)
 );
