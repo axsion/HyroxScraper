@@ -183,19 +183,20 @@ async function scrapeCategory(page, url, ageGroup) {
 
     const eventName = await page.title();
 
-    const podium = await page.$$eval("table tr", rows =>
-      Array.from(rows)
-        .slice(0, 3)
-        .map(r => {
-          const tds = Array.from(r.querySelectorAll("td"));
-          const rank = tds[1]?.innerText.trim();
-          const name = tds[3]?.innerText.trim();
-          const detectedAge = tds[4]?.innerText.trim();
-          const time = tds[5]?.innerText.trim();
-          return { rank, name, ageGroup: detectedAge || ageGroup, time };
-        })
-        .filter(r => r.name && r.time)
-    );
+const podium = await page.$$eval("table tr", (rows, ageGroup) =>
+  Array.from(rows)
+    .slice(0, 3)
+    .map(r => {
+      const tds = Array.from(r.querySelectorAll("td"));
+      const rank = tds[1]?.innerText.trim();
+      const name = tds[3]?.innerText.trim();
+      const detectedAge = tds[4]?.innerText.trim();
+      const time = tds[5]?.innerText.trim();
+      return { rank, name, ageGroup: detectedAge || ageGroup, time };
+    })
+    .filter(r => r.name && r.time),
+ageGroup);
+
 
     if (!podium.length) {
       console.log(`⚠️ No podium data found for ${url}`);
