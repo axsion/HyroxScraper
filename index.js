@@ -1,6 +1,6 @@
 /**
- * HYROX Podium Scraper — Solo Master Categories (static list)
- * v1.1  (October 2025)
+ * HYROX Podium Scraper v3 — One Event per Request (Solo Master Categories)
+ * October 2025
  */
 
 import express from "express";
@@ -13,8 +13,8 @@ const PORT = process.env.PORT || 10000;
 const DATA_FILE = path.resolve("./data/last-run.json");
 
 /**
- * All known event URLs (solo races only)
- * Add or remove as new events appear.
+ * 🗺️ All known SOLO event URLs for 2025 season
+ * (Men + Women only, no doubles)
  */
 const EVENT_URLS = [
   "https://www.hyresult.com/ranking/s8-2025-valencia-hyrox-men",
@@ -77,63 +77,69 @@ const EVENT_URLS = [
   "https://www.hyresult.com/ranking/s7-2025-heerenveen-hyrox-women"
 ];
 
-/**
- * Express endpoints
- */
+/* -------------------- API -------------------- */
+
 app.get("/api/health", (_, res) => res.json({ ok: true }));
 
+app.get("/api/events", (_, res) => res.json({ count: EVENT_URLS.length, events: EVENT_URLS }));
+
 app.get("/api/last-run", (_, res) => {
-  if (fs.existsSync(DATA_FILE)) {
-    return res.json(JSON.parse(fs.readFileSync(DATA_FILE, "utf8")));
-  }
-  return res.json({ events: [] });
+  if (fs.existsSync(DATA_FILE)) return res.json(JSON.parse(fs.readFileSync(DATA_FILE, "utf8")));
+  res.json({ events: [] });
 });
 
-app.get("/api/scrape-all", async (_, res) => {
+/**
+ * 🧠 Scrape one event: /api/scrape?url=<eventUrl>
+ */
+app.get("/api/scrape", async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).json({ error: "Missing ?url=" });
+  if (!EVENT_URLS.includes(url)) return res.status(400).json({ error: "Unknown event URL" });
+
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
-
-  const events = [];
-  for (const url of EVENT_URLS) {
-    console.log(`Scraping ${url}`);
+  try {
     const data = await scrapeEvent(page, url);
-    if (data && data.podium?.length) events.push(data);
+    await browser.close();
+
+    // Cache event
+    let cache = { scrapedAt: new Date().toISOString(), events: [] };
+    if (fs.existsSync(DATA_FILE)) {
+      cache = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+    }
+    cache.events = cache.events.filter(e => e.url !== url);
+    cache.events.push(data);
+    fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
+    fs.writeFileSync(DATA_FILE, JSON.stringify(cache, null, 2));
+
+    res.json(data);
+  } catch (err) {
+    await browser.close();
+    res.status(500).json({ error: err.message });
   }
-
-  await browser.close();
-
-  const result = { scrapedAt: new Date().toISOString(), events };
-  fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-  fs.writeFileSync(DATA_FILE, JSON.stringify(result, null, 2));
-  res.json(result);
 });
 
+/* -------------------- Scraper Logic -------------------- */
 async function scrapeEvent(page, url) {
-  try {
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
-    const eventName = await page.title();
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+  const eventName = await page.title();
 
-    // Extract first 3 podium rows
-    const podium = await page.$$eval("table tbody tr", rows =>
-      Array.from(rows)
-        .slice(0, 3)
-        .map(r => {
-          const tds = r.querySelectorAll("td");
-          return {
-            rank: tds[0]?.innerText.trim(),
-            name: tds[1]?.innerText.trim(),
-            ageGroup: tds[2]?.innerText.trim(),
-            time: tds[tds.length - 1]?.innerText.trim()
-          };
-        })
-    );
+  const podium = await page.$$eval("table tbody tr", rows =>
+    Array.from(rows)
+      .slice(0, 3)
+      .map(r => {
+        const tds = r.querySelectorAll("td");
+        return {
+          rank: tds[0]?.innerText.trim(),
+          name: tds[1]?.innerText.trim(),
+          ageGroup: tds[2]?.innerText.trim(),
+          time: tds[tds.length - 1]?.innerText.trim()
+        };
+      })
+  );
 
-    const gender = /WOMEN/i.test(eventName) ? "Women" : "Men";
-    return { eventName, gender, url, podium };
-  } catch (err) {
-    console.log(`❌ Failed ${url}: ${err.message}`);
-    return null;
-  }
+  const gender = /WOMEN/i.test(eventName) ? "Women" : "Men";
+  return { eventName, gender, url, podium };
 }
 
 app.listen(PORT, () => console.log(`✅ HYROX Scraper running on port ${PORT}`));
