@@ -1,13 +1,3 @@
-/**
- * HYROX Scraper v14.2 — Background-safe Render version
- * Frederic Bergeron | October 2025
- *
- * ✅ Background scraping (no timeout)
- * ✅ Saves to /data/last-run.json
- * ✅ Safe for Render Free Tier (async)
- * ✅ Works with Google Sheets v14
- */
-
 import express from "express";
 import fs from "fs";
 import path from "path";
@@ -16,234 +6,153 @@ import { chromium } from "playwright";
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-const DATA_DIR = path.resolve("./data");
+// -----------------------------------------------------------------------------
+// CONFIG
+// -----------------------------------------------------------------------------
+const DATA_DIR = path.join(process.cwd(), "data");
 const LAST_RUN_FILE = path.join(DATA_DIR, "last-run.json");
 
-/* -------------------------------------------------------------------------- */
-/*                               EVENT URL LIST                               */
-/* -------------------------------------------------------------------------- */
+const AGE_GROUPS = ["45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79"];
 
-const EVENT_BASE_URLS = [
+const EVENT_URLS = [
   "https://www.hyresult.com/ranking/s8-2025-valencia-hyrox-men",
   "https://www.hyresult.com/ranking/s8-2025-valencia-hyrox-women",
   "https://www.hyresult.com/ranking/s8-2025-gdansk-hyrox-men",
   "https://www.hyresult.com/ranking/s8-2025-gdansk-hyrox-women",
   "https://www.hyresult.com/ranking/s8-2025-geneva-hyrox-men",
   "https://www.hyresult.com/ranking/s8-2025-geneva-hyrox-women",
-  "https://www.hyresult.com/ranking/s8-2025-hamburg-hyrox-men",
-  "https://www.hyresult.com/ranking/s8-2025-hamburg-hyrox-women",
   "https://www.hyresult.com/ranking/s8-2025-toronto-hyrox-men",
   "https://www.hyresult.com/ranking/s8-2025-toronto-hyrox-women",
-  "https://www.hyresult.com/ranking/s8-2025-oslo-hyrox-men",
-  "https://www.hyresult.com/ranking/s8-2025-oslo-hyrox-women",
-  "https://www.hyresult.com/ranking/s8-2025-rome-hyrox-men",
-  "https://www.hyresult.com/ranking/s8-2025-rome-hyrox-women",
-  "https://www.hyresult.com/ranking/s8-2025-boston-hyrox-men",
-  "https://www.hyresult.com/ranking/s8-2025-boston-hyrox-women",
-  "https://www.hyresult.com/ranking/s8-2025-maastricht-hyrox-men",
-  "https://www.hyresult.com/ranking/s8-2025-maastricht-hyrox-women",
-  "https://www.hyresult.com/ranking/s8-2025-sao-paulo-hyrox-men",
-  "https://www.hyresult.com/ranking/s8-2025-sao-paulo-hyrox-women",
-  "https://www.hyresult.com/ranking/s8-2025-acapulco-hyrox-men",
-  "https://www.hyresult.com/ranking/s8-2025-acapulco-hyrox-women",
-  "https://www.hyresult.com/ranking/s8-2025-perth-hyrox-men",
-  "https://www.hyresult.com/ranking/s8-2025-perth-hyrox-women",
-  "https://www.hyresult.com/ranking/s8-2025-mumbai-hyrox-men",
-  "https://www.hyresult.com/ranking/s8-2025-mumbai-hyrox-women",
-  "https://www.hyresult.com/ranking/s8-2025-beijing-hyrox-men",
-  "https://www.hyresult.com/ranking/s8-2025-beijing-hyrox-women",
-  "https://www.hyresult.com/ranking/s8-2025-yokohama-hyrox-men",
-  "https://www.hyresult.com/ranking/s8-2025-yokohama-hyrox-women",
-  "https://www.hyresult.com/ranking/s8-2025-hong-kong-hyrox-men",
-  "https://www.hyresult.com/ranking/s8-2025-hong-kong-hyrox-women",
-  "https://www.hyresult.com/ranking/s8-2025-cape-town-hyrox-men",
-  "https://www.hyresult.com/ranking/s8-2025-cape-town-hyrox-women",
-  "https://www.hyresult.com/ranking/s8-2025-new-delhi-hyrox-men",
-  "https://www.hyresult.com/ranking/s8-2025-new-delhi-hyrox-women",
-  "https://www.hyresult.com/ranking/s8-2025-abu-dhabi-hyrox-men",
-  "https://www.hyresult.com/ranking/s8-2025-abu-dhabi-hyrox-women",
-  "https://www.hyresult.com/ranking/s8-2025-sydney-hyrox-men",
-  "https://www.hyresult.com/ranking/s8-2025-sydney-hyrox-women",
-  "https://www.hyresult.com/ranking/s8-2025-singapore-hyrox-men",
-  "https://www.hyresult.com/ranking/s8-2025-singapore-hyrox-women",
-  "https://www.hyresult.com/ranking/s7-2025-new-york-hyrox-men",
-  "https://www.hyresult.com/ranking/s7-2025-new-york-hyrox-women",
-  "https://www.hyresult.com/ranking/s7-2025-rimini-hyrox-men",
-  "https://www.hyresult.com/ranking/s7-2025-rimini-hyrox-women",
-  "https://www.hyresult.com/ranking/s7-2025-cardiff-hyrox-men",
-  "https://www.hyresult.com/ranking/s7-2025-cardiff-hyrox-women",
-  "https://www.hyresult.com/ranking/s7-2025-riga-hyrox-men",
-  "https://www.hyresult.com/ranking/s7-2025-riga-hyrox-women",
-  "https://www.hyresult.com/ranking/s7-2025-bangkok-hyrox-men",
-  "https://www.hyresult.com/ranking/s7-2025-bangkok-hyrox-women",
-  "https://www.hyresult.com/ranking/s7-2025-berlin-hyrox-men",
-  "https://www.hyresult.com/ranking/s7-2025-berlin-hyrox-women",
-  "https://www.hyresult.com/ranking/s7-2025-incheon-hyrox-men",
-  "https://www.hyresult.com/ranking/s7-2025-incheon-hyrox-women",
-  "https://www.hyresult.com/ranking/s7-2025-heerenveen-hyrox-men",
-  "https://www.hyresult.com/ranking/s7-2025-heerenveen-hyrox-women"
 ];
 
-const AGE_GROUPS = ["45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79"];
+// ensure data directory
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-/* -------------------------------------------------------------------------- */
-/*                                  ROUTES                                    */
-/* -------------------------------------------------------------------------- */
-
-app.get("/api/health", (_, res) => res.json({ ok: true }));
-
-// 🟢 STEP 1 — Detached background scraping
-app.get("/api/scrape-batch-save", async (req, res) => {
-  const offset = parseInt(req.query.offset || "0", 10);
-  const limit = parseInt(req.query.limit || "10", 10);
-  const subset = EVENT_BASE_URLS.slice(offset, offset + limit);
-
-  console.log(`🚀 Starting background SAVE batch from index ${offset}`);
-  res.json({
-    message: `🟡 Background batch launched (offset=${offset}, limit=${limit}). Results will be saved to last-run.json.`
-  });
-
-  // Run asynchronously after response
-  (async () => {
-    try {
-      const browser = await chromium.launch({
-        headless: true,
-        args: ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"]
-      });
-
-      const page = await browser.newPage();
-      await page.setExtraHTTPHeaders({
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
-      });
-
-      const results = [];
-      for (const baseUrl of subset) {
-        const eventData = await scrapeEvent(page, baseUrl);
-        results.push(...eventData);
-      }
-
-      await browser.close();
-
-      const output = {
-        scrapedAt: new Date().toISOString(),
-        count: results.length,
-        nextOffset: offset + limit < EVENT_BASE_URLS.length ? offset + limit : null,
-        events: results
-      };
-
-      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-      fs.writeFileSync(LAST_RUN_FILE, JSON.stringify(output, null, 2));
-
-      console.log(`✅ Background scrape done — saved ${results.length} events to last-run.json`);
-    } catch (err) {
-      console.error("❌ Error in background scrape:", err);
-    }
-  })();
-});
-
-// 🟢 STEP 2 — Fast read for Google Sheets
-app.get("/api/last-run", (req, res) => {
-  if (!fs.existsSync(LAST_RUN_FILE)) {
-    return res.status(404).json({ error: "No last-run data found" });
+// helper to save incremental results safely
+function saveCheckpoint(allResults) {
+  try {
+    fs.writeFileSync(
+      LAST_RUN_FILE,
+      JSON.stringify(
+        {
+          scrapedAt: new Date().toISOString(),
+          count: allResults.length,
+          events: allResults,
+        },
+        null,
+        2
+      )
+    );
+    console.log(`💾 Saved checkpoint (${allResults.length} events)`);
+  } catch (err) {
+    console.error("❌ Error saving checkpoint:", err);
   }
-  const data = JSON.parse(fs.readFileSync(LAST_RUN_FILE, "utf8"));
-  res.json(data);
-});
-
-// 🧪 Manual test
-app.get("/api/scrape", async (req, res) => {
-  const url = req.query.url;
-  if (!url) return res.status(400).json({ error: "Missing ?url=" });
-
-  const browser = await chromium.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"]
-  });
-  const page = await browser.newPage();
-  await page.setExtraHTTPHeaders({
-    "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
-  });
-
-  const results = await scrapeEvent(page, url);
-  await browser.close();
-
-  res.json({ count: results.length, events: results });
-});
-
-/* -------------------------------------------------------------------------- */
-/*                              SCRAPER LOGIC                                 */
-/* -------------------------------------------------------------------------- */
-
-async function scrapeEvent(page, baseUrl) {
-  const results = [];
-  for (const ag of AGE_GROUPS) {
-    const fullUrl = baseUrl.includes("?ag=") ? baseUrl : `${baseUrl}?ag=${ag}`;
-    console.log(`🔎 Scraping ${fullUrl}`);
-    const data = await scrapeCategory(page, fullUrl, ag);
-    if (data) results.push(data);
-  }
-  return results;
 }
 
-async function scrapeCategory(page, url, ageGroup) {
+// helper to load previous cache
+function loadPrevious() {
+  if (!fs.existsSync(LAST_RUN_FILE)) return [];
   try {
-    console.log(`🔎 Visiting ${url}`);
-    try {
-      await page.goto(url, { waitUntil: "networkidle", timeout: 25000 });
-    } catch {
-      console.log(`⚠️ Slow load for ${url}, retrying...`);
-      try {
-        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 25000 });
-      } catch {
-        console.log(`⏩ Skipped (slow/no response): ${url}`);
-        return null;
-      }
+    const data = JSON.parse(fs.readFileSync(LAST_RUN_FILE, "utf8"));
+    return data.events || [];
+  } catch {
+    return [];
+  }
+}
+
+// -----------------------------------------------------------------------------
+// SCRAPER
+// -----------------------------------------------------------------------------
+async function scrapeSingle(page, baseUrl, ageGroup) {
+  const url = `${baseUrl}?ag=${ageGroup}`;
+  console.log(`🔎 Visiting ${url}`);
+
+  try {
+    await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
+    const hasTable = await page.$("table");
+    if (!hasTable) {
+      console.warn(`⚠️ No table for ${url}`);
+      return null;
     }
 
-    const tableExists = await page.$("table tr td:nth-child(4)");
-    if (!tableExists) {
-      console.log(`⚠️ No results table for ${url} — skipping.`);
+    const rows = await page.$$eval("table tbody tr", trs =>
+      trs.slice(0, 3).map(tr => {
+        const cells = [...tr.querySelectorAll("td")].map(td => td.innerText.trim());
+        return {
+          rank: cells[1] || "",
+          name: cells[3] || "",
+          time: cells[5] || "",
+        };
+      })
+    );
+
+    if (rows.length === 0) {
+      console.warn(`⚠️ Empty table at ${url}`);
       return null;
     }
 
     const eventName = await page.title();
-    const podium = await page.$$eval(
-      "table tr",
-      (rows, ageGroup) =>
-        Array.from(rows)
-          .slice(0, 3)
-          .map((r) => {
-            const tds = Array.from(r.querySelectorAll("td"));
-            const rank = tds[1]?.innerText.trim();
-            const name = tds[3]?.innerText.trim();
-            const detectedAge = tds[4]?.innerText.trim();
-            const time = tds[5]?.innerText.trim();
-            return { rank, name, ageGroup: detectedAge || ageGroup, time };
-          })
-          .filter((r) => r.name && r.time),
-      ageGroup
-    );
+    const gender = baseUrl.includes("women") ? "Women" : "Men";
+    const entry = {
+      eventName,
+      gender,
+      category: ageGroup,
+      url,
+      podium: rows,
+    };
 
-    if (!podium.length) {
-      console.log(`⚠️ Empty table for ${url}`);
-      return null;
-    }
-
-    const gender = /WOMEN/i.test(eventName) ? "Women" : "Men";
-    console.log(`✅ ${eventName} (${ageGroup}) → ${podium.length} rows`);
-    return { eventName, gender, category: ageGroup, url, podium };
+    console.log(`✅ ${eventName} (${ageGroup}) → ${rows.length} rows`);
+    return entry;
   } catch (err) {
-    console.log(`❌ Error scraping ${url}: ${err.message}`);
+    console.error(`❌ Error scraping ${url}: ${err.message}`);
     return null;
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/*                               SERVER START                                 */
-/* -------------------------------------------------------------------------- */
+// -----------------------------------------------------------------------------
+// API ENDPOINTS
+// -----------------------------------------------------------------------------
+app.get("/api/scrape-batch-save", async (req, res) => {
+  console.log("🚀 Starting background SAVE batch...");
+  const allResults = loadPrevious();
+
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+
+  for (const baseUrl of EVENT_URLS) {
+    for (const ag of AGE_GROUPS) {
+      const existing = allResults.find(
+        e => e.url === `${baseUrl}?ag=${ag}`
+      );
+      if (existing) {
+        console.log(`⏩ Skipping already scraped ${baseUrl}?ag=${ag}`);
+        continue;
+      }
+
+      const result = await scrapeSingle(page, baseUrl, ag);
+      if (result) {
+        allResults.push(result);
+        saveCheckpoint(allResults);
+      }
+    }
+  }
+
+  await browser.close();
+  saveCheckpoint(allResults);
+  res.json({ status: "✅ Batch complete", count: allResults.length });
+});
+
+app.get("/api/last-run", (req, res) => {
+  if (!fs.existsSync(LAST_RUN_FILE))
+    return res.status(404).json({ error: "No last-run data found" });
+  const data = JSON.parse(fs.readFileSync(LAST_RUN_FILE, "utf8"));
+  res.json(data);
+});
+
+app.get("/", (req, res) => {
+  res.send("✅ HYROX Scraper v15A — stream-to-disk mode");
+});
 
 app.listen(PORT, () =>
-  console.log(`✅ HYROX Scraper v14.2 running on port ${PORT}`)
+  console.log(`✅ HYROX Scraper v15A running on port ${PORT}`)
 );
