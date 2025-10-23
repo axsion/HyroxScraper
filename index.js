@@ -214,6 +214,22 @@ async function scrapeCategory(page, url, ageGroup) {
     const gender = /WOMEN/i.test(eventName) ? "Women" : "Men";
     console.log(`✅ ${eventName} (${ageGroup}) → ${podium.length} rows`);
     return { eventName, gender, category: ageGroup, url, podium };
+
+  } catch (err) {
+    console.log(`❌ Error scraping ${url}: ${err.message}`);
+    return null;
+  }
+}
+
+
+    if (!podium.length) {
+      console.log(`⚠️ Empty table for ${url}`);
+      return null;
+    }
+
+    const gender = /WOMEN/i.test(eventName) ? "Women" : "Men";
+    console.log(`✅ ${eventName} (${ageGroup}) → ${podium.length} rows`);
+    return { eventName, gender, category: ageGroup, url, podium };
   } catch (err) {
     console.log(`❌ Error scraping ${url}: ${err.message}`);
     return null;
