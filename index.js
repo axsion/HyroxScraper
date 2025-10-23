@@ -1,11 +1,11 @@
 /**
- * HYROX Scraper v12 — Stable + Timeout Safe
+ * HYROX Scraper v13 — Stable + Timeout Safe + Retry
  * Frederic Bergeron | October 2025
  *
- * ✅ Skips missing age-group pages automatically
- * ✅ Extracts Masters podiums accurately
- * ✅ Stateless: works fine on Render free tier
- * ✅ Memory-safe: one browser per batch
+ * ✅ Handles missing or slow pages gracefully
+ * ✅ Extracts Masters podiums (45-79)
+ * ✅ Stateless — perfect for Render free tier
+ * ✅ Memory safe — single browser per batch
  */
 
 import express from "express";
@@ -102,8 +102,8 @@ app.get("/api/scrape-batch", async (req, res) => {
       "--disable-blink-features=AutomationControlled"
     ]
   });
-  const page = await browser.newPage();
 
+  const page = await browser.newPage();
   await page.setExtraHTTPHeaders({
     "User-Agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
@@ -138,6 +138,7 @@ app.get("/api/scrape", async (req, res) => {
       "--disable-blink-features=AutomationControlled"
     ]
   });
+
   const page = await browser.newPage();
   await page.setExtraHTTPHeaders({
     "User-Agent":
@@ -168,9 +169,22 @@ async function scrapeEvent(page, baseUrl) {
 async function scrapeCategory(page, url, ageGroup) {
   try {
     console.log(`🔎 Visiting ${url}`);
-    await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
 
-    // ✅ Skip non-existent pages gracefully
+    // 🕐 Attempt 1: standard navigation (max 25s)
+    try {
+      await page.goto(url, { waitUntil: "networkidle", timeout: 25000 });
+    } catch (navErr) {
+      console.log(`⚠️ Slow load for ${url}, retrying with lighter mode...`);
+      // 🕐 Attempt 2: fallback with domcontentloaded
+      try {
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 25000 });
+      } catch (finalErr) {
+        console.log(`⏩ Giving up on ${url} (slow/no response).`);
+        return null;
+      }
+    }
+
+    // ✅ Check if table exists quickly; skip if not found
     const tableExists = await page.$("table tr td:nth-child(4)");
     if (!tableExists) {
       console.log(`⚠️ No results table for ${url} — skipping.`);
@@ -215,5 +229,5 @@ async function scrapeCategory(page, url, ageGroup) {
 /* -------------------------------------------------------------------------- */
 
 app.listen(PORT, () =>
-  console.log(`✅ HYROX Scraper v12 running on port ${PORT}`)
+  console.log(`✅ HYROX Scraper v13 running on port ${PORT}`)
 );
