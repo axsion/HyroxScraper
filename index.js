@@ -12,7 +12,6 @@ const resultFile = path.join(dataDir, "last-run.json");
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
 // === Static list of base events ===
-// (NO "-men" or "-women" here — script adds those automatically)
 const baseEvents = [
   "https://www.hyresult.com/ranking/s8-2025-valencia-hyrox",
   "https://www.hyresult.com/ranking/s8-2025-gdansk-hyrox",
@@ -66,7 +65,7 @@ app.get("/api/scrape-all", async (req, res) => {
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
 
-    // Load previous run data if available
+    // Load previous data
     let previousData = { events: [] };
     if (fs.existsSync(resultFile)) {
       previousData = JSON.parse(fs.readFileSync(resultFile, "utf8"));
@@ -126,7 +125,7 @@ app.get("/api/scrape-all", async (req, res) => {
       ok: true,
       total: previousData.events.length,
       scrapedNow: newUrls.length,
-      log
+      log: logs
     });
   } catch (err) {
     log(logs, `❌ Fatal error: ${err.message}`);
@@ -136,10 +135,35 @@ app.get("/api/scrape-all", async (req, res) => {
   }
 });
 
+// === Refresh (cron job safe) ===
+app.get("/api/refresh", async (_, res) => {
+  try {
+    const response = await fetch(`http://localhost:${PORT}/api/scrape-all`);
+    const result = await response.json();
+    res.json({ refreshed: true, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// === Event summaries ===
+app.get("/api/events", (_, res) => {
+  if (!fs.existsSync(resultFile)) return res.status(404).json({ error: "No data" });
+  const data = JSON.parse(fs.readFileSync(resultFile, "utf8"));
+  const summary = data.events.map(e => ({
+    eventName: e.eventName,
+    gender: e.gender,
+    url: e.url,
+    topAthlete: e.podium[0]?.name || "N/A",
+    bestTime: e.podium[0]?.time || "N/A"
+  }));
+  res.json(summary);
+});
+
 // === View stored data ===
 app.get("/api/last-run", (_, res) => {
   if (!fs.existsSync(resultFile)) {
-    return res.status(404).json({ error: "No previous run found" });
+    return res.status(404).json({ error: "No last-run data found" });
   }
   const data = JSON.parse(fs.readFileSync(resultFile, "utf8"));
   res.json(data);
