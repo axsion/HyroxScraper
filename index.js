@@ -1,10 +1,10 @@
 /**
- * HYROX Doubles Scraper (v19.2)
- * -----------------------------------
- * • Adds missing Season 7 doubles only.
- * • Keeps existing Season 8 data intact.
- * • Detects Season 7 HTML structure automatically.
- * • Produces consistent {rank, name, time} output.
+ * HYROX Doubles Scraper (v19.3) — Season 7 Add-On
+ * ------------------------------------------------
+ * • Crawls ONLY Season 7 doubles (Men/Women/Mixed).
+ * • Header-aware parsing for S7 (handles different table layouts).
+ * • Heuristics for names/times if headers are unusual.
+ * • Incremental, restart-safe; does NOT re-scrape S8.
  */
 
 import express from "express";
@@ -14,12 +14,13 @@ import { chromium } from "playwright";
 
 const app = express();
 const PORT = process.env.PORT || 10000;
+
 const DATA_PATH = path.resolve("./data/last-run.json");
 fs.mkdirSync(path.dirname(DATA_PATH), { recursive: true });
 
-/* ---------------------------------------------------------------------------
-   CONFIGURATION
---------------------------------------------------------------------------- */
+/* ---------------------------------------------
+   CONFIG
+--------------------------------------------- */
 
 const AGE_GROUPS = {
   s7: [
@@ -29,7 +30,7 @@ const AGE_GROUPS = {
   ]
 };
 
-// ✅ Only S7 doubles URLs
+// ONLY S7 doubles URLs (S8 already done)
 const EVENT_URLS = [
   "https://www.hyresult.com/ranking/s7-2025-new-york-hyrox-doubles-men",
   "https://www.hyresult.com/ranking/s7-2025-new-york-hyrox-doubles-women",
@@ -64,9 +65,9 @@ const EVENT_URLS = [
   "https://www.hyresult.com/ranking/s7-2025-heerenveen-hyrox-doubles-mixed"
 ];
 
-/* ---------------------------------------------------------------------------
-   CACHE HANDLERS
---------------------------------------------------------------------------- */
+/* ---------------------------------------------
+   CACHE
+--------------------------------------------- */
 
 function loadCache() {
   try {
@@ -75,56 +76,117 @@ function loadCache() {
     return { events: [] };
   }
 }
-
 function saveCache(cache) {
   fs.writeFileSync(DATA_PATH, JSON.stringify(cache, null, 2));
 }
 
-/* ---------------------------------------------------------------------------
-   SCRAPER — with S7 HTML fix
---------------------------------------------------------------------------- */
+/* ---------------------------------------------
+   UTILS
+--------------------------------------------- */
+
+function parseEventMeta(url) {
+  const m = url.match(/(s\d+)-(\d{4})-([\w-]+)-hyrox-(doubles-)?(\w+)/i);
+  const season = m ? m[1] : "s7";
+  const year = m ? m[2] : "2025";
+  const city = m ? m[3].replace(/-/g, " ") : "";
+  const type = /doubles/i.test(url) ? "Double" : "Solo";
+  const gender = /men/i.test(url) ? "Men" : /women/i.test(url) ? "Women" : "Mixed";
+  return { season, year, city, type, gender };
+}
+
+function looksLikeTime(s) {
+  return /^\d{1,2}:\d{2}(:\d{2})?$/.test(s); // mm:ss or hh:mm:ss
+}
+
+function looksLikeNames(s) {
+  // Typical patterns: "A, B", "A & B", "A / B"
+  return /,| & | \/ /.test(s) && /[A-Za-z]/.test(s);
+}
+
+/* ---------------------------------------------
+   SCRAPER (header-aware for S7)
+--------------------------------------------- */
 
 async function scrapeSingle(baseUrl, ageGroup) {
   const url = `${baseUrl}?ag=${ageGroup}`;
-  const isSeason7 = /\/s7-/.test(url);
   console.log(`🔎 Scraping ${url}`);
-
-  const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
+  const browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
   const page = await browser.newPage();
 
   try {
     await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
+    // Give JS-rendered tables a breath
     await page.waitForTimeout(1500);
 
-    const rows = await page.$$eval(
-      "table tbody tr",
-      (trs, isS7) =>
-        trs.slice(0, 3).map(tr => {
-          const tds = Array.from(tr.querySelectorAll("td")).map(td =>
-            td.innerText.trim()
-          );
+    const isSeason7 = /\/s7-/.test(url);
 
-          if (isS7) {
-            // Season 7 doubles layout → names at col 4, time at col 5
-            return {
-              rank: tds[1] || "",
-              name: tds[4] || "",
-              time: tds[5] || ""
-            };
-          } else {
-            // Standard (Season 8) fallback
-            return {
-              rank: tds[1] || "",
-              name: tds[3] || "",
-              time: tds[5] || ""
-            };
+    const result = await page.evaluate((isS7) => {
+      const table = document.querySelector("table");
+      if (!table) return { rows: [] };
+
+      const headerCells = Array.from(table.querySelectorAll("thead th"));
+      const headers = headerCells.map(th => th.textContent.trim().toLowerCase());
+
+      // Try to locate indexes by header labels
+      const findIdx = (predicates) => {
+        for (let i = 0; i < headers.length; i++) {
+          for (const re of predicates) {
+            if (re.test(headers[i])) return i;
           }
-        }),
-      isSeason7
-    );
+        }
+        return -1;
+      };
+
+      const rankIdx = findIdx([/rank|pos|#/i]);
+      const timeIdx = findIdx([/time|result|finish|chip/i]);
+      // Names can be "athletes", "team", "name"
+      let nameIdx = findIdx([/athlete|team|name/i]);
+      // In S7, an extra "category" column is present sometimes
+      const catIdx = findIdx([/category|age/i]);
+
+      const bodyRows = Array.from(table.querySelectorAll("tbody tr"));
+      const firstThree = bodyRows.slice(0, 3);
+
+      const parsed = firstThree.map(tr => {
+        const tds = Array.from(tr.querySelectorAll("td")).map(td => td.textContent.trim());
+
+        // Heuristics if headers are missing or misleading:
+        // 1) TIME: pick the first td that looks like time if timeIdx < 0
+        let timeVal = timeIdx >= 0 ? (tds[timeIdx] || "") : (tds.find(looksLikeTime) || "");
+
+        // 2) NAME: prefer header-mapped name; otherwise pick the first td
+        //    that "looks like names" (contains comma / ampersand / slash)
+        let nameVal = nameIdx >= 0 ? (tds[nameIdx] || "") : (tds.find(looksLikeNames) || "");
+
+        // S7 often has category in the cell we thought was "name" — detect and adjust:
+        if (isS7 && nameVal && /^\d{2}-\d{2}$/.test(nameVal)) {
+          // Try to find another candidate that looks like names
+          const alt = tds.find(s => s !== nameVal && looksLikeNames(s));
+          if (alt) nameVal = alt;
+        }
+
+        // 3) RANK: if missing, try the first numeric-ish cell
+        let rankVal = rankIdx >= 0 ? (tds[rankIdx] || "") : (tds.find(s => /^\d+$/.test(s)) || "");
+
+        return { rank: rankVal, name: nameVal, time: timeVal };
+      });
+
+      return { rows: parsed };
+    }, isSeason7);
 
     await browser.close();
-    return rows;
+
+    const rows = (result && result.rows) || [];
+    // Filter out any empty rows
+    const cleaned = rows
+      .map(r => ({
+        rank: (r.rank || "").trim(),
+        name: (r.name || "").trim(),
+        time: (r.time || "").trim()
+      }))
+      .filter(r => r.name || r.time);
+
+    return cleaned;
   } catch (err) {
     console.error(`❌ ${url}: ${err.message}`);
     await browser.close();
@@ -132,27 +194,9 @@ async function scrapeSingle(baseUrl, ageGroup) {
   }
 }
 
-/* ---------------------------------------------------------------------------
-   HELPERS
---------------------------------------------------------------------------- */
-
-function parseEventMeta(url) {
-  const match = url.match(/(s\d+)-(\d{4})-([\w-]+)-hyrox-(doubles-)?(\w+)/i);
-  const season = match ? match[1] : "s7";
-  const year = match ? match[2] : "2025";
-  const city = match ? match[3].replace(/-/g, " ") : "";
-  const type = /doubles/i.test(url) ? "Double" : "Solo";
-  const gender = /men/i.test(url)
-    ? "Men"
-    : /women/i.test(url)
-    ? "Women"
-    : "Mixed";
-  return { season, year, city, type, gender };
-}
-
-/* ---------------------------------------------------------------------------
-   MAIN SCRAPE (Season 7 only, safe incremental)
---------------------------------------------------------------------------- */
+/* ---------------------------------------------
+   MAIN (S7 only; incremental)
+--------------------------------------------- */
 
 async function scrapeSeason7Only() {
   const cache = loadCache();
@@ -162,6 +206,7 @@ async function scrapeSeason7Only() {
   for (const baseUrl of EVENT_URLS) {
     const { season, year, city, type, gender } = parseEventMeta(baseUrl);
     const ageGroups = AGE_GROUPS[season];
+    if (!ageGroups) continue;
 
     for (const ag of ageGroups) {
       const fullUrl = `${baseUrl}?ag=${ag}`;
@@ -171,15 +216,20 @@ async function scrapeSeason7Only() {
       }
 
       const podium = await scrapeSingle(baseUrl, ag);
-      if (!podium.length) continue;
+      if (!podium.length) {
+        console.warn(`⚠️ No podium rows for ${fullUrl}`);
+        continue;
+      }
 
-      const eventName = `Ranking of ${year} ${city.toUpperCase()} HYROX ${type.toUpperCase()} ${gender.toUpperCase()}`;
+      // Normalize “DOUBLES” spelling to match S8 rows in your sheet
+      const eventName = `Ranking of ${year} ${city.toUpperCase()} HYROX DOUBLES ${gender.toUpperCase()}`;
+
       const event = {
         eventName,
         gender,
         category: ag,
-        type,
-        season,
+        type,          // "Double"
+        season,        // "s7"
         year,
         city,
         url: fullUrl,
@@ -188,19 +238,19 @@ async function scrapeSeason7Only() {
 
       cache.events.push(event);
       seen.add(fullUrl);
-      saveCache(cache);
+      saveCache(cache);                       // incremental persistence
       console.log(`✅ Added ${eventName} (${ag})`);
-      await new Promise(r => setTimeout(r, 800));
+      await new Promise(r => setTimeout(r, 700)); // be polite
     }
   }
 
-  console.log(`🎉 Added ${cache.events.length - before} new Season 7 events`);
+  console.log(`🎉 Added ${cache.events.length - before} new S7 events (total: ${cache.events.length})`);
   return cache;
 }
 
-/* ---------------------------------------------------------------------------
-   EXPRESS ROUTES
---------------------------------------------------------------------------- */
+/* ---------------------------------------------
+   ROUTES
+--------------------------------------------- */
 
 app.get("/api/scrape-s7", async (_req, res) => {
   const cache = await scrapeSeason7Only();
@@ -209,6 +259,6 @@ app.get("/api/scrape-s7", async (_req, res) => {
 
 app.get("/api/last-run", (_req, res) => res.json(loadCache()));
 
-app.listen(PORT, () =>
-  console.log(`✅ HYROX Doubles S7 Scraper (v19.2) running on port ${PORT}`)
-);
+app.listen(PORT, () => {
+  console.log(`✅ HYROX Doubles S7 Scraper (v19.3) running on port ${PORT}`);
+});
