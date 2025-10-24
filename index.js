@@ -1,10 +1,10 @@
 /**
- * HYROX Doubles Scraper Add-On (v19.1)
+ * HYROX Doubles Scraper (v19.2)
  * -----------------------------------
- * - Adds missing Season 7 doubles results only.
- * - Keeps all existing S8 data intact.
- * - Skips already cached URLs.
- * - Safe to rerun multiple times — idempotent.
+ * • Adds missing Season 7 doubles only.
+ * • Keeps existing Season 8 data intact.
+ * • Detects Season 7 HTML structure automatically.
+ * • Produces consistent {rank, name, time} output.
  */
 
 import express from "express";
@@ -29,7 +29,7 @@ const AGE_GROUPS = {
   ]
 };
 
-// ✅ Only S7 URLs — since all S8 are done
+// ✅ Only S7 doubles URLs
 const EVENT_URLS = [
   "https://www.hyresult.com/ranking/s7-2025-new-york-hyrox-doubles-men",
   "https://www.hyresult.com/ranking/s7-2025-new-york-hyrox-doubles-women",
@@ -67,6 +67,7 @@ const EVENT_URLS = [
 /* ---------------------------------------------------------------------------
    CACHE HANDLERS
 --------------------------------------------------------------------------- */
+
 function loadCache() {
   try {
     return JSON.parse(fs.readFileSync(DATA_PATH, "utf8"));
@@ -80,27 +81,46 @@ function saveCache(cache) {
 }
 
 /* ---------------------------------------------------------------------------
-   SCRAPER
+   SCRAPER — with S7 HTML fix
 --------------------------------------------------------------------------- */
+
 async function scrapeSingle(baseUrl, ageGroup) {
   const url = `${baseUrl}?ag=${ageGroup}`;
+  const isSeason7 = /\/s7-/.test(url);
+  console.log(`🔎 Scraping ${url}`);
+
   const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
   const page = await browser.newPage();
-  console.log(`🔎 Scraping ${url}`);
 
   try {
     await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
     await page.waitForTimeout(1500);
 
-    const rows = await page.$$eval("table tbody tr", trs =>
-      trs.slice(0, 3).map(tr => {
-        const cells = tr.querySelectorAll("td");
-        return {
-          rank: cells[0]?.innerText?.trim() || "",
-          name: cells[1]?.innerText?.trim() || "",
-          time: cells[2]?.innerText?.trim() || ""
-        };
-      })
+    const rows = await page.$$eval(
+      "table tbody tr",
+      (trs, isS7) =>
+        trs.slice(0, 3).map(tr => {
+          const tds = Array.from(tr.querySelectorAll("td")).map(td =>
+            td.innerText.trim()
+          );
+
+          if (isS7) {
+            // Season 7 doubles layout → names at col 4, time at col 5
+            return {
+              rank: tds[1] || "",
+              name: tds[4] || "",
+              time: tds[5] || ""
+            };
+          } else {
+            // Standard (Season 8) fallback
+            return {
+              rank: tds[1] || "",
+              name: tds[3] || "",
+              time: tds[5] || ""
+            };
+          }
+        }),
+      isSeason7
     );
 
     await browser.close();
@@ -115,6 +135,7 @@ async function scrapeSingle(baseUrl, ageGroup) {
 /* ---------------------------------------------------------------------------
    HELPERS
 --------------------------------------------------------------------------- */
+
 function parseEventMeta(url) {
   const match = url.match(/(s\d+)-(\d{4})-([\w-]+)-hyrox-(doubles-)?(\w+)/i);
   const season = match ? match[1] : "s7";
@@ -130,8 +151,9 @@ function parseEventMeta(url) {
 }
 
 /* ---------------------------------------------------------------------------
-   MAIN SCRAPE (Season 7 ONLY)
+   MAIN SCRAPE (Season 7 only, safe incremental)
 --------------------------------------------------------------------------- */
+
 async function scrapeSeason7Only() {
   const cache = loadCache();
   const seen = new Set(cache.events.map(e => e.url));
@@ -179,6 +201,7 @@ async function scrapeSeason7Only() {
 /* ---------------------------------------------------------------------------
    EXPRESS ROUTES
 --------------------------------------------------------------------------- */
+
 app.get("/api/scrape-s7", async (_req, res) => {
   const cache = await scrapeSeason7Only();
   res.json({ ok: true, total: cache.events.length });
@@ -187,5 +210,5 @@ app.get("/api/scrape-s7", async (_req, res) => {
 app.get("/api/last-run", (_req, res) => res.json(loadCache()));
 
 app.listen(PORT, () =>
-  console.log(`✅ HYROX Doubles S7 Add-On Scraper running on port ${PORT}`)
+  console.log(`✅ HYROX Doubles S7 Scraper (v19.2) running on port ${PORT}`)
 );
