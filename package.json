@@ -4,8 +4,7 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "start": "PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/.playwright node index.js",
-    "postinstall": "npx playwright install --with-deps chromium"
+    "start": "PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/.playwright node index.js"
   },
   "dependencies": {
     "express": "^4.19.2",
