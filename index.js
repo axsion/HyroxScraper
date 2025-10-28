@@ -1,19 +1,40 @@
 /**
- * HYROX Scraper v20.2 — Stable Render Edition
+ * HYROX Scraper v20.3 — Render Stable Edition
  * --------------------------------------------
- * Works on Render free tier, supports Solo + Double (Paris + Birmingham),
- * parses both S7 and S8 event structures, and syncs with Google Sheets.
+ * ✅ Auto-installs Chromium at runtime (works on Render free tier)
+ * ✅ Crawls both Solo + Doubles (Paris & Birmingham)
+ * ✅ Compatible with s7/s8 age groups
+ * ✅ Persists results to /data/last-run.json
+ * ✅ Fully compatible with your Google Sheets integration
  */
 
 import express from "express";
 import { chromium } from "playwright";
+import { execSync } from "child_process";
 import fs from "fs";
 import path from "path";
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Persistent cache
+/* -----------------------------------------------------------
+   🧱 Auto-Install Chromium (Render safe)
+----------------------------------------------------------- */
+try {
+  const PLAYWRIGHT_DIR = "/opt/render/project/.playwright";
+  if (!fs.existsSync(`${PLAYWRIGHT_DIR}/chromium`)) {
+    console.log("🧩 Installing Chromium runtime...");
+    execSync("npx playwright install chromium", { stdio: "inherit" });
+  } else {
+    console.log("✅ Chromium already installed.");
+  }
+} catch (err) {
+  console.warn("⚠️ Skipping Chromium install:", err.message);
+}
+
+/* -----------------------------------------------------------
+   💾 Cache Setup
+----------------------------------------------------------- */
 const DATA_DIR = path.join(process.cwd(), "data");
 const LAST_RUN_FILE = path.join(DATA_DIR, "last-run.json");
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -27,7 +48,7 @@ if (fs.existsSync(LAST_RUN_FILE)) {
 }
 
 /* -----------------------------------------------------------
-   🧩 Utility: helper functions
+   🧠 Utilities
 ----------------------------------------------------------- */
 function looksLikeTime(s) {
   return /^\d{1,2}:\d{2}(:\d{2})?$/.test(s);
@@ -37,11 +58,16 @@ function looksLikeName(s) {
 }
 
 /* -----------------------------------------------------------
-   🕷️ Scrape one event (per age group)
+   🕷️ Scrape Single URL
 ----------------------------------------------------------- */
 async function scrapeSingle(url) {
   console.log(`🔎 Scraping ${url}`);
-  const browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH || undefined
+  });
+
   const page = await browser.newPage();
 
   try {
@@ -50,7 +76,7 @@ async function scrapeSingle(url) {
 
     const rows = await page.$$eval("table tbody tr", trs =>
       trs.slice(0, 3).map(tr => {
-        const tds = [...tr.querySelectorAll("td")].map(td => td.innerText.trim()).filter(Boolean);
+        const tds = [...tr.querySelectorAll("td")].map(td => td.innerText.trim());
         const name = tds.find(t => /[A-Za-z]/.test(t) && t.length > 2) || "";
         const time = tds.find(t => /^\d{1,2}:\d{2}(:\d{2})?$/.test(t)) || "";
         const rank = tds.find(t => /^\d+$/.test(t)) || "";
@@ -59,8 +85,9 @@ async function scrapeSingle(url) {
     );
 
     await browser.close();
+
     if (!rows.length) {
-      console.warn(`⚠️ Empty result for ${url}`);
+      console.warn(`⚠️ No data found for ${url}`);
       return null;
     }
 
@@ -73,9 +100,9 @@ async function scrapeSingle(url) {
 }
 
 /* -----------------------------------------------------------
-   🧱 Build list of weekend events (Paris + Birmingham)
+   🌍 Event URL Builder
 ----------------------------------------------------------- */
-function buildWeekendEventUrls() {
+function buildWeekendUrls() {
   const baseUrls = [
     // --- SOLO ---
     "https://www.hyresult.com/ranking/s8-2025-paris-hyrox-men",
@@ -105,10 +132,10 @@ function buildWeekendEventUrls() {
 }
 
 /* -----------------------------------------------------------
-   ⚙️ Run scrape batch
+   ⚙️ Scrape Batch
 ----------------------------------------------------------- */
 async function runWeekendScrape() {
-  const urls = buildWeekendEventUrls();
+  const urls = buildWeekendUrls();
   const newEvents = [];
 
   for (const url of urls) {
@@ -131,7 +158,7 @@ async function runWeekendScrape() {
       continue;
     }
 
-    newEvents.push({
+    const event = {
       eventName,
       city,
       year: 2025,
@@ -140,32 +167,24 @@ async function runWeekendScrape() {
       type,
       podium: rows,
       url
-    });
+    };
 
-    cache.events.push({
-      eventName,
-      city,
-      year: 2025,
-      category,
-      gender,
-      type,
-      podium: rows,
-      url
-    });
+    newEvents.push(event);
+    cache.events.push(event);
 
     fs.writeFileSync(LAST_RUN_FILE, JSON.stringify(cache, null, 2));
     console.log(`✅ Added ${eventName} (${category})`);
   }
 
-  console.log(`🎯 Scrape complete: ${newEvents.length} new events added.`);
+  console.log(`🎯 Scrape complete — ${newEvents.length} new events added.`);
   return newEvents;
 }
 
 /* -----------------------------------------------------------
-   🌐 Routes
+   🌐 API Routes
 ----------------------------------------------------------- */
 app.get("/", (_req, res) =>
-  res.send("✅ HYROX Scraper v20.2 — Paris + Birmingham (Solo + Double)")
+  res.send("✅ HYROX Scraper v20.3 — Render-safe, Paris + Birmingham")
 );
 
 app.get("/api/scrape-weekend", async (_req, res) => {
@@ -204,5 +223,5 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
    🚀 Start server
 ----------------------------------------------------------- */
 app.listen(PORT, () =>
-  console.log(`🔥 HYROX Scraper v20.2 running on port ${PORT}`)
+  console.log(`🔥 HYROX Scraper v20.3 running on port ${PORT}`)
 );
