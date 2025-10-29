@@ -234,7 +234,7 @@ app.get("/api/last-run", (_req, res) => {
   res.sendFile(LAST_RUN_FILE);
 });
 
-app.post("/api/set-initial-cache", express.json(), (req, res) => {
+app.post("/api/set-initial-cache", express.json({ limit: "20mb" }), (req, res) => {
   const { events } = req.body;
   if (!Array.isArray(events))
     return res.status(400).json({ error: "Invalid cache payload" });
