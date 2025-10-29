@@ -73,20 +73,69 @@ async function scrapeSingle(url) {
 
   try {
     await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(1200);
 
-    const rows = await page.$$eval("table tbody tr", trs =>
-      trs.slice(0, 3).map(tr => {
-        const tds = [...tr.querySelectorAll("td")].map(td => td.innerText.trim());
-        const name = tds.find(t => /[A-Za-z]/.test(t) && t.length > 2) || "";
-        const time = tds.find(t => /^\d{1,2}:\d{2}(:\d{2})?$/.test(t)) || "";
-        const rank = tds.find(t => /^\d+$/.test(t)) || "";
-        return { rank, name, time };
-      })
-    );
+    const rows = await page.evaluate(() => {
+      const table = document.querySelector("table");
+      if (!table) return [];
+
+      // Read header to map columns
+      const ths = Array.from(table.querySelectorAll("thead th")).map(th =>
+        th.innerText.trim().toLowerCase()
+      );
+
+      // Fallback if no thead (some pages)
+      if (!ths.length) {
+        const firstRow = table.querySelector("tr");
+        if (firstRow) {
+          const guess = Array.from(firstRow.querySelectorAll("th,td")).map(
+            td => td.innerText.trim().toLowerCase()
+          );
+          if (guess.length) ths.push(...guess);
+        }
+      }
+
+      const colIndex = (names) => {
+        const idx = ths.findIndex(h => names.some(n => h.includes(n)));
+        return idx >= 0 ? idx : -1;
+      };
+
+      const nameIdx = colIndex(["athlete", "name", "team", "pair", "competitor"]);
+      const timeIdx = colIndex(["time", "result", "finish"]);
+
+      const bodyRows = Array.from(table.querySelectorAll("tbody tr")).slice(0, 3);
+
+      return bodyRows.map(tr => {
+        const tds = Array.from(tr.querySelectorAll("td"));
+        const safeText = (td) => (td ? td.innerText.replace(/\s+/g, " ").trim() : "");
+
+        let name = "";
+        if (nameIdx >= 0 && tds[nameIdx]) {
+          const a = tds[nameIdx].querySelector("a");
+          name = (a ? a.innerText : tds[nameIdx].innerText) || "";
+        } else {
+          // fallback: first cell that looks like names (letters + spaces/commas)
+          const guess = tds.map(td => safeText(td)).find(v => /[A-Za-z]/.test(v) && !/^\d{1,2}:\d{2}(:\d{2})?$/.test(v));
+          name = guess || "";
+        }
+
+        let time = "";
+        if (timeIdx >= 0 && tds[timeIdx]) {
+          time = safeText(tds[timeIdx]);
+        } else {
+          const guessTime = tds.map(td => safeText(td)).find(v => /^\d{1,2}:\d{2}(:\d{2})?$/.test(v));
+          time = guessTime || "";
+        }
+
+        // rank is optional; we don’t rely on it
+        const rankText = tds.map(td => safeText(td)).find(v => /^\d+$/.test(v)) || "";
+
+        return { rank: rankText, name, time };
+      }).filter(r => r.name && r.time);
+    });
 
     await browser.close();
-    return rows.filter(r => r.name && r.time);
+    return rows;
   } catch (err) {
     console.error(`❌ ${url}: ${err.message}`);
     await browser.close();
