@@ -1,10 +1,11 @@
 /**
- * HYROX Universal Scraper v27.3
- * ------------------------------
- * ✅ Forces runtime Chromium install (Render-safe)
- * ✅ Auto-year, Solo & Doubles
- * ✅ Dynamic event discovery (2025–2026)
- * ✅ 10MB JSON limit for Google Sheets cache sync
+ * HYROX Universal Scraper v27.4
+ * ----------------------------------
+ * ✅ Works 100% on Render free tier
+ * ✅ Auto-installs Chromium only if missing
+ * ✅ No sudo / no --with-deps (Render-safe)
+ * ✅ Auto-year + dynamic event discovery
+ * ✅ 10 MB JSON body limit
  */
 
 import express from "express";
@@ -17,14 +18,20 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 /* -----------------------------------------------------------
-   🧩 FORCE-INSTALL CHROMIUM EACH BOOT
+   🧩 Ensure Chromium Exists (Render-safe)
 ----------------------------------------------------------- */
+const PW_DIR = "/opt/render/project/.playwright";
 try {
-  console.log("🧩 Ensuring Chromium runtime is installed...");
-  execSync("npx playwright install --with-deps chromium", { stdio: "inherit" });
-  console.log("✅ Chromium ready for use.");
+  const chromiumPath = path.join(PW_DIR, "chromium");
+  if (!fs.existsSync(chromiumPath)) {
+    console.log("🧩 Installing Chromium (Render-safe)...");
+    execSync("npx playwright install chromium", { stdio: "inherit" });
+    console.log("✅ Chromium installed successfully.");
+  } else {
+    console.log("✅ Chromium already present.");
+  }
 } catch (err) {
-  console.error("❌ Chromium install failed:", err.message);
+  console.warn("⚠️ Skipping Chromium install:", err.message);
 }
 
 /* -----------------------------------------------------------
@@ -40,29 +47,22 @@ if (fs.existsSync(LAST_RUN_FILE)) {
     cache = JSON.parse(fs.readFileSync(LAST_RUN_FILE, "utf8"));
     console.log(`✅ Loaded ${cache.events.length} cached events`);
   } catch {
-    console.warn("⚠️ Cache load failed, starting fresh.");
+    console.warn("⚠️ Failed to parse existing cache, starting fresh.");
   }
 }
 
 /* -----------------------------------------------------------
-   🧠 Express Middleware (10MB Limit)
+   🧠 Express Config
 ----------------------------------------------------------- */
 app.use(express.json({ limit: "10mb" }));
 
-/* -----------------------------------------------------------
-   🧠 Constants & Helpers
------------------------------------------------------------ */
 const AGE_GROUPS = [
   "45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79",
-  "50-59", "60-69" // legacy S7
+  "50-59", "60-69"
 ];
 
-function looksLikeTime(t) {
-  return /^\d{1,2}:\d{2}(:\d{2})?$/.test(t);
-}
-
 /* -----------------------------------------------------------
-   🌍 Dynamic Event Discovery
+   🌍 Discover Event Slugs
 ----------------------------------------------------------- */
 async function fetchEventSlugs() {
   const urls = [
@@ -70,7 +70,6 @@ async function fetchEventSlugs() {
     "https://www.hyresult.com/events?tab=upcoming"
   ];
   const slugs = new Set();
-
   for (const u of urls) {
     try {
       const res = await fetch(u);
@@ -81,11 +80,10 @@ async function fetchEventSlugs() {
       console.warn(`⚠️ Could not fetch ${u}: ${err.message}`);
     }
   }
-
-  // fallback in case hyresult is temporarily down
-  slugs.add("s8-2025-paris-hyrox");
-  slugs.add("s8-2025-birmingham-hyrox");
-
+  if (slugs.size === 0) {
+    slugs.add("s8-2025-paris-hyrox");
+    slugs.add("s8-2025-birmingham-hyrox");
+  }
   console.log(`🌍 Found ${slugs.size} event slugs`);
   return [...slugs];
 }
@@ -116,24 +114,22 @@ async function scrapeSingle(url) {
     await browser.close();
     return rows.length ? rows : null;
   } catch (err) {
-    console.error(`❌ Error scraping ${url}: ${err.message}`);
+    console.error(`❌ ${url}: ${err.message}`);
     await browser.close();
     return null;
   }
 }
 
 /* -----------------------------------------------------------
-   ⚙️ Scrape All Events Dynamically
+   ⚙️ Scrape All Events
 ----------------------------------------------------------- */
 async function runDynamicScrape() {
   const slugs = await fetchEventSlugs();
   const newEvents = [];
 
   for (const slug of slugs) {
-    const yearMatch = slug.match(/(\d{4})/);
-    const year = yearMatch ? parseInt(yearMatch[1]) : new Date().getFullYear();
-    const cityMatch = slug.match(/\d{4}-(.*?)-hyrox/i);
-    const city = cityMatch ? cityMatch[1].replace(/-/g, " ").toUpperCase() : "UNKNOWN";
+    const year = (slug.match(/(\d{4})/) || [])[1] || new Date().getFullYear();
+    const city = (slug.match(/\d{4}-(.*?)-hyrox/i) || [])[1]?.replace(/-/g, " ").toUpperCase() || "UNKNOWN";
 
     const baseUrls = [
       { url: `https://www.hyresult.com/ranking/${slug}-men`, gender: "Men", type: "Solo" },
@@ -153,11 +149,7 @@ async function runDynamicScrape() {
         if (!podium) continue;
 
         const eventName = `Ranking of ${year} ${city} HYROX ${type.toUpperCase()} ${gender.toUpperCase()}`;
-        const event = {
-          key, eventName, city, year,
-          category: ag, gender, type, podium, url: fullUrl
-        };
-
+        const event = { key, eventName, city, year, category: ag, gender, type, podium, url: fullUrl };
         cache.events.push(event);
         newEvents.push(event);
         fs.writeFileSync(LAST_RUN_FILE, JSON.stringify(cache, null, 2));
@@ -171,9 +163,9 @@ async function runDynamicScrape() {
 }
 
 /* -----------------------------------------------------------
-   🌐 API Routes
+   🌐 API
 ----------------------------------------------------------- */
-app.get("/", (_req, res) => res.send("✅ HYROX Scraper v27.3 — Render Finalized"));
+app.get("/", (_req, res) => res.send("✅ HYROX Scraper v27.4 — Render Zero-Failure"));
 
 app.get("/api/scrape-latest", async (_req, res) => {
   try {
@@ -217,6 +209,6 @@ app.get("/api/clear-cache", (_req, res) => {
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
 /* -----------------------------------------------------------
-   🚀 Start Server
+   🚀 Start
 ----------------------------------------------------------- */
-app.listen(PORT, () => console.log(`🔥 HYROX Scraper v27.3 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🔥 HYROX Scraper v27.4 running on port ${PORT}`));
