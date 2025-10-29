@@ -1,10 +1,10 @@
 /**
- * HYROX Universal Scraper v27.1
+ * HYROX Universal Scraper v27.2
  * ------------------------------
  * ✅ Auto-year, Solo & Doubles
  * ✅ Dynamic event discovery
  * ✅ Render-safe with headless Chromium auto-install
- * ✅ Works with Google Sheets multi-year routing
+ * ✅ 10 MB body limit for Google Sheets cache sync
  */
 
 import express from "express";
@@ -32,7 +32,7 @@ try {
 }
 
 /* -----------------------------------------------------------
-   💾 Cache Setup
+   💾 Cache setup
 ----------------------------------------------------------- */
 const DATA_DIR = path.join(process.cwd(), "data");
 const LAST_RUN_FILE = path.join(DATA_DIR, "last-run.json");
@@ -49,6 +49,11 @@ if (fs.existsSync(LAST_RUN_FILE)) {
 }
 
 /* -----------------------------------------------------------
+   🧠 Express global middleware (10 MB limit)
+----------------------------------------------------------- */
+app.use(express.json({ limit: "10mb" }));
+
+/* -----------------------------------------------------------
    🧠 Helpers
 ----------------------------------------------------------- */
 const AGE_GROUPS = [
@@ -61,7 +66,7 @@ function looksLikeTime(t) {
 }
 
 /* -----------------------------------------------------------
-   🌍 Dynamic Event Discovery
+   🌍 Dynamic event discovery
 ----------------------------------------------------------- */
 async function fetchEventSlugs() {
   const urls = [
@@ -81,7 +86,7 @@ async function fetchEventSlugs() {
     }
   }
 
-  // Add fallback slugs (new events not yet listed)
+  // Safety fallback
   slugs.add("s8-2025-paris-hyrox");
   slugs.add("s8-2025-birmingham-hyrox");
 
@@ -90,7 +95,7 @@ async function fetchEventSlugs() {
 }
 
 /* -----------------------------------------------------------
-   🕷️ Scrape a Single URL
+   🕷️ Scrape a single URL
 ----------------------------------------------------------- */
 async function scrapeSingle(url) {
   const browser = await chromium.launch({
@@ -100,7 +105,6 @@ async function scrapeSingle(url) {
   });
 
   const page = await browser.newPage();
-
   try {
     await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
     await page.waitForTimeout(1500);
@@ -124,7 +128,7 @@ async function scrapeSingle(url) {
 }
 
 /* -----------------------------------------------------------
-   ⚙️ Main Scrape Logic
+   ⚙️ Main scrape logic
 ----------------------------------------------------------- */
 async function runDynamicScrape() {
   const slugs = await fetchEventSlugs();
@@ -155,15 +159,8 @@ async function runDynamicScrape() {
 
         const eventName = `Ranking of ${year} ${city} HYROX ${type.toUpperCase()} ${gender.toUpperCase()}`;
         const event = {
-          key,
-          eventName,
-          city,
-          year,
-          category: ag,
-          gender,
-          type,
-          podium,
-          url: fullUrl
+          key, eventName, city, year,
+          category: ag, gender, type, podium, url: fullUrl
         };
 
         cache.events.push(event);
@@ -179,9 +176,11 @@ async function runDynamicScrape() {
 }
 
 /* -----------------------------------------------------------
-   🌐 API Routes
+   🌐 API routes
 ----------------------------------------------------------- */
-app.get("/", (_req, res) => res.send("✅ HYROX Scraper v27.1 — Render Safe Auto-Year"));
+app.get("/", (_req, res) =>
+  res.send("✅ HYROX Scraper v27.2 — Render Safe Auto-Year")
+);
 
 app.get("/api/scrape-latest", async (_req, res) => {
   try {
@@ -202,17 +201,15 @@ app.get("/api/scrape-weekend", async (_req, res) => {
 });
 
 app.get("/api/last-run", (_req, res) => {
-  if (!fs.existsSync(LAST_RUN_FILE)) return res.status(404).json({ error: "No cache found" });
+  if (!fs.existsSync(LAST_RUN_FILE))
+    return res.status(404).json({ error: "No cache found" });
   res.sendFile(LAST_RUN_FILE);
 });
 
-app.post(
-  "/api/set-initial-cache",
-  express.json({ limit: "10mb" }),   // ⬅️ allows up to 10 MB payloads
-  (req, res) => {
-
+app.post("/api/set-initial-cache", (req, res) => {
   const { events } = req.body;
-  if (!Array.isArray(events)) return res.status(400).json({ error: "Invalid payload" });
+  if (!Array.isArray(events))
+    return res.status(400).json({ error: "Invalid payload" });
   cache.events = events;
   fs.writeFileSync(LAST_RUN_FILE, JSON.stringify(cache, null, 2));
   res.json({ status: "✅ Cache restored", count: events.length });
@@ -227,6 +224,8 @@ app.get("/api/clear-cache", (_req, res) => {
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
 /* -----------------------------------------------------------
-   🚀 Start Server
+   🚀 Start server
 ----------------------------------------------------------- */
-app.listen(PORT, () => console.log(`🔥 HYROX Scraper v27.1 running on port ${PORT}`));
+app.listen(PORT, () =>
+  console.log(`🔥 HYROX Scraper v27.2 running on port ${PORT}`)
+);
