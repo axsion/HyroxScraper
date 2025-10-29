@@ -1,11 +1,11 @@
 /**
- * HYROX Scraper v24 — Masters Edition (45+)
- * ------------------------------------------
- * ✅ Focused on Masters age-groups (45–79)
- * ✅ S7–S9 seasons (2025–2026)
+ * HYROX Scraper v25 — Masters-Complete Edition
+ * ---------------------------------------------
+ * ✅ Crawls S7–S9 (2025–2026)
+ * ✅ Focused on Masters age groups (45–79 + legacy 50–59, 60–69)
  * ✅ Solo + Doubles (Men/Women/Mixed)
- * ✅ Smart skip logic to avoid repeats
- * ✅ Render-safe with Chromium auto-install
+ * ✅ Smart duplicate prevention (per event+category)
+ * ✅ Auto-installs Chromium on Render free tier
  */
 
 import express from "express";
@@ -48,14 +48,14 @@ if (fs.existsSync(LAST_RUN_FILE)) {
 }
 
 /* -----------------------------------------------------------
-   🧠 Helpers
+   🧠 Utilities
 ----------------------------------------------------------- */
 function looksLikeTime(s) {
   return /^\d{1,2}:\d{2}(:\d{2})?$/.test(s);
 }
 
 /* -----------------------------------------------------------
-   🕷️ Universal Scraper
+   🕷️ Scraper
 ----------------------------------------------------------- */
 async function scrapeSingle(url) {
   console.log(`🔎 ${url}`);
@@ -113,7 +113,8 @@ async function scrapeSingle(url) {
    🌍 URL Builders (Masters only)
 ----------------------------------------------------------- */
 const MASTERS_AGE_GROUPS = [
-  "45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79",
+  "45-49", "50-54", "55-59", "60-64",
+  "65-69", "70-74", "75-79",
   "50-59", "60-69" // legacy S7
 ];
 
@@ -154,7 +155,6 @@ function buildWeekendUrls() {
     "https://www.hyresult.com/ranking/s8-2025-birmingham-hyrox-doubles-women",
     "https://www.hyresult.com/ranking/s8-2025-birmingham-hyrox-doubles-mixed",
   ];
-
   const urls = [];
   baseUrls.forEach(base =>
     MASTERS_AGE_GROUPS.forEach(ag => urls.push(`${base}?ag=${ag}`))
@@ -163,17 +163,13 @@ function buildWeekendUrls() {
 }
 
 /* -----------------------------------------------------------
-   ⚙️ Main Scraper (smart deduplication)
+   ⚙️ Scrape Controller
 ----------------------------------------------------------- */
 async function runFullScrape(urlList) {
   const urls = urlList || buildAllUrls();
   const newEvents = [];
-  const processedBases = new Set();
 
   for (const url of urls) {
-    const baseKey = url.replace(/\?ag=.*$/, "");
-    if (processedBases.has(baseKey)) continue;
-
     const rows = await scrapeSingle(url);
     if (!rows.length) continue;
 
@@ -189,16 +185,16 @@ async function runFullScrape(urlList) {
 
     const eventName = `Ranking of ${year} ${city} HYROX ${type.toUpperCase()} ${gender}`;
     const key = `${eventName}_${category}`;
+
     if (cache.events.some(e => `${e.eventName}_${e.category}` === key)) {
       console.log(`⏩ Skipped cached ${key}`);
-      processedBases.add(baseKey);
       continue;
     }
 
     const event = { eventName, city, year, category, gender, type, podium: rows, url };
     cache.events.push(event);
     newEvents.push(event);
-    processedBases.add(baseKey);
+
     fs.writeFileSync(LAST_RUN_FILE, JSON.stringify(cache, null, 2));
     console.log(`✅ Added ${eventName} (${category})`);
   }
@@ -211,7 +207,7 @@ async function runFullScrape(urlList) {
    🌐 API Routes
 ----------------------------------------------------------- */
 app.get("/", (_req, res) =>
-  res.send("✅ HYROX Scraper v24 — Masters Edition (S7–S9, Solo & Doubles)")
+  res.send("✅ HYROX Scraper v25 — Masters-Complete Edition (S7–S9, Solo & Doubles)")
 );
 
 app.get("/api/scrape-all", async (_req, res) => {
@@ -240,7 +236,8 @@ app.get("/api/last-run", (_req, res) => {
 
 app.post("/api/set-initial-cache", express.json(), (req, res) => {
   const { events } = req.body;
-  if (!Array.isArray(events)) return res.status(400).json({ error: "Invalid cache payload" });
+  if (!Array.isArray(events))
+    return res.status(400).json({ error: "Invalid cache payload" });
   cache.events = events;
   fs.writeFileSync(LAST_RUN_FILE, JSON.stringify(cache, null, 2));
   res.json({ status: "✅ Cache restored", count: events.length });
@@ -257,4 +254,4 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 /* -----------------------------------------------------------
    🚀 Launch
 ----------------------------------------------------------- */
-app.listen(PORT, () => console.log(`🔥 HYROX Scraper v24 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🔥 HYROX Scraper v25 running on port ${PORT}`));
