@@ -1,9 +1,10 @@
 /**
- * HYROX Universal Scraper v27.0
+ * HYROX Universal Scraper v27.1
  * ------------------------------
  * ✅ Auto-year, Solo & Doubles
  * ✅ Dynamic event discovery
- * ✅ Render-safe with headless Chromium
+ * ✅ Render-safe with headless Chromium auto-install
+ * ✅ Works with Google Sheets multi-year routing
  */
 
 import express from "express";
@@ -11,22 +12,27 @@ import { chromium } from "playwright";
 import { execSync } from "child_process";
 import fs from "fs";
 import path from "path";
-//import fetch from "node-fetch";
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
 /* -----------------------------------------------------------
-   🧩 Auto-install Chromium (Render free tier)
+   🧩 Auto-install Chromium (Render Safe)
 ----------------------------------------------------------- */
 try {
-  execSync("npx playwright install --with-deps chromium", { stdio: "inherit" });
+  const chromiumDir = "/opt/render/project/.playwright/chromium";
+  if (!fs.existsSync(chromiumDir)) {
+    console.log("🧩 Installing Chromium runtime (Render free tier)...");
+    execSync("npx playwright install --with-deps chromium", { stdio: "inherit" });
+  } else {
+    console.log("✅ Chromium already installed.");
+  }
 } catch (err) {
-  console.warn("⚠️ Playwright install skipped:", err.message);
+  console.warn("⚠️ Skipping Chromium install:", err.message);
 }
 
 /* -----------------------------------------------------------
-   💾 Cache
+   💾 Cache Setup
 ----------------------------------------------------------- */
 const DATA_DIR = path.join(process.cwd(), "data");
 const LAST_RUN_FILE = path.join(DATA_DIR, "last-run.json");
@@ -34,12 +40,16 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 let cache = { events: [] };
 if (fs.existsSync(LAST_RUN_FILE)) {
-  cache = JSON.parse(fs.readFileSync(LAST_RUN_FILE, "utf8"));
-  console.log(`✅ Loaded ${cache.events.length} cached events`);
+  try {
+    cache = JSON.parse(fs.readFileSync(LAST_RUN_FILE, "utf8"));
+    console.log(`✅ Loaded ${cache.events.length} cached events`);
+  } catch {
+    console.warn("⚠️ Failed to read existing cache, starting fresh.");
+  }
 }
 
 /* -----------------------------------------------------------
-   🧠 Utilities
+   🧠 Helpers
 ----------------------------------------------------------- */
 const AGE_GROUPS = [
   "45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79",
@@ -48,9 +58,6 @@ const AGE_GROUPS = [
 
 function looksLikeTime(t) {
   return /^\d{1,2}:\d{2}(:\d{2})?$/.test(t);
-}
-function looksLikeName(t) {
-  return /[A-Za-z]/.test(t) && !looksLikeTime(t) && !/^(\d+|DNF|DSQ)$/i.test(t);
 }
 
 /* -----------------------------------------------------------
@@ -74,7 +81,7 @@ async function fetchEventSlugs() {
     }
   }
 
-  // Manual fallbacks (for newly added events)
+  // Add fallback slugs (new events not yet listed)
   slugs.add("s8-2025-paris-hyrox");
   slugs.add("s8-2025-birmingham-hyrox");
 
@@ -88,8 +95,10 @@ async function fetchEventSlugs() {
 async function scrapeSingle(url) {
   const browser = await chromium.launch({
     headless: true,
-    args: ["--no-sandbox", "--disable-dev-shm-usage"]
+    args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH || undefined
   });
+
   const page = await browser.newPage();
 
   try {
@@ -99,16 +108,16 @@ async function scrapeSingle(url) {
     const rows = await page.$$eval("table tbody tr", trs =>
       trs.slice(0, 3).map(tr => {
         const tds = [...tr.querySelectorAll("td")].map(td => td.innerText.trim());
-        const name = tds.filter(t => /[A-Za-z]/.test(t)).slice(0, 2).join(", ");
+        const names = tds.filter(t => /[A-Za-z]/.test(t)).slice(0, 2).join(", ");
         const time = tds.find(t => /^\d{1,2}:\d{2}(:\d{2})?$/.test(t)) || "";
-        return { name, time };
+        return { name: names, time };
       })
     );
 
     await browser.close();
     return rows.length ? rows : null;
   } catch (err) {
-    console.error(`❌ ${url}: ${err.message}`);
+    console.error(`❌ Error scraping ${url}: ${err.message}`);
     await browser.close();
     return null;
   }
@@ -127,21 +136,15 @@ async function runDynamicScrape() {
     const cityMatch = slug.match(/\d{4}-(.*?)-hyrox/i);
     const city = cityMatch ? cityMatch[1].replace(/-/g, " ").toUpperCase() : "UNKNOWN";
 
-    const baseSoloMen = `https://www.hyresult.com/ranking/${slug}-men`;
-    const baseSoloWomen = `https://www.hyresult.com/ranking/${slug}-women`;
-    const baseDoubleMen = `https://www.hyresult.com/ranking/${slug}-doubles-men`;
-    const baseDoubleWomen = `https://www.hyresult.com/ranking/${slug}-doubles-women`;
-    const baseDoubleMixed = `https://www.hyresult.com/ranking/${slug}-doubles-mixed`;
-
-    const allBases = [
-      { url: baseSoloMen, gender: "Men", type: "Solo" },
-      { url: baseSoloWomen, gender: "Women", type: "Solo" },
-      { url: baseDoubleMen, gender: "Men", type: "Double" },
-      { url: baseDoubleWomen, gender: "Women", type: "Double" },
-      { url: baseDoubleMixed, gender: "Mixed", type: "Double" }
+    const baseUrls = [
+      { url: `https://www.hyresult.com/ranking/${slug}-men`, gender: "Men", type: "Solo" },
+      { url: `https://www.hyresult.com/ranking/${slug}-women`, gender: "Women", type: "Solo" },
+      { url: `https://www.hyresult.com/ranking/${slug}-doubles-men`, gender: "Men", type: "Double" },
+      { url: `https://www.hyresult.com/ranking/${slug}-doubles-women`, gender: "Women", type: "Double" },
+      { url: `https://www.hyresult.com/ranking/${slug}-doubles-mixed`, gender: "Mixed", type: "Double" }
     ];
 
-    for (const { url: baseUrl, gender, type } of allBases) {
+    for (const { url: baseUrl, gender, type } of baseUrls) {
       for (const ag of AGE_GROUPS) {
         const fullUrl = `${baseUrl}?ag=${ag}`;
         const key = `${slug}_${ag}_${type}`;
@@ -178,7 +181,7 @@ async function runDynamicScrape() {
 /* -----------------------------------------------------------
    🌐 API Routes
 ----------------------------------------------------------- */
-app.get("/", (_req, res) => res.send("✅ HYROX Scraper v27 — Auto-Year Edition"));
+app.get("/", (_req, res) => res.send("✅ HYROX Scraper v27.1 — Render Safe Auto-Year"));
 
 app.get("/api/scrape-latest", async (_req, res) => {
   try {
@@ -205,7 +208,7 @@ app.get("/api/last-run", (_req, res) => {
 
 app.post("/api/set-initial-cache", express.json(), (req, res) => {
   const { events } = req.body;
-  if (!events) return res.status(400).json({ error: "Invalid cache payload" });
+  if (!Array.isArray(events)) return res.status(400).json({ error: "Invalid payload" });
   cache.events = events;
   fs.writeFileSync(LAST_RUN_FILE, JSON.stringify(cache, null, 2));
   res.json({ status: "✅ Cache restored", count: events.length });
@@ -217,7 +220,9 @@ app.get("/api/clear-cache", (_req, res) => {
   res.json({ status: "cleared" });
 });
 
+app.get("/api/health", (_req, res) => res.json({ ok: true }));
+
 /* -----------------------------------------------------------
-   🚀 Start
+   🚀 Start Server
 ----------------------------------------------------------- */
-app.listen(PORT, () => console.log(`🔥 HYROX Scraper v27 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🔥 HYROX Scraper v27.1 running on port ${PORT}`));
