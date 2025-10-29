@@ -1,11 +1,11 @@
 /**
- * HYROX Scraper v23 — Universal Edition
- * -------------------------------------
- * ✅ Crawls S7–S9 events (2025–2026)
- * ✅ Supports Solo + Doubles (Men/Women/Mixed)
- * ✅ Skips redundant loops intelligently
- * ✅ Includes /api/scrape-weekend for latest races
- * ✅ Auto-installs Chromium for Render free tier
+ * HYROX Scraper v24 — Masters Edition (45+)
+ * ------------------------------------------
+ * ✅ Focused on Masters age-groups (45–79)
+ * ✅ S7–S9 seasons (2025–2026)
+ * ✅ Solo + Doubles (Men/Women/Mixed)
+ * ✅ Smart skip logic to avoid repeats
+ * ✅ Render-safe with Chromium auto-install
  */
 
 import express from "express";
@@ -48,17 +48,14 @@ if (fs.existsSync(LAST_RUN_FILE)) {
 }
 
 /* -----------------------------------------------------------
-   🧠 Utility helpers
+   🧠 Helpers
 ----------------------------------------------------------- */
 function looksLikeTime(s) {
   return /^\d{1,2}:\d{2}(:\d{2})?$/.test(s);
 }
-function looksLikeName(s) {
-  return /[A-Za-z]/.test(s) && !looksLikeTime(s) && !/^(\d+|DNF|DSQ)$/i.test(s);
-}
 
 /* -----------------------------------------------------------
-   🕷️ Universal Scraper (works for S7–S9)
+   🕷️ Universal Scraper
 ----------------------------------------------------------- */
 async function scrapeSingle(url) {
   console.log(`🔎 ${url}`);
@@ -79,26 +76,28 @@ async function scrapeSingle(url) {
       const ths = Array.from(table.querySelectorAll("thead th")).map(th =>
         th.innerText.trim().toLowerCase()
       );
-      const colIndex = (names) => {
-        const idx = ths.findIndex(h => names.some(n => h.includes(n)));
-        return idx >= 0 ? idx : -1;
-      };
+      const colIndex = names => ths.findIndex(h => names.some(n => h.includes(n)));
+
       const nameIdx = colIndex(["athlete", "name", "team", "pair", "competitor"]);
       const timeIdx = colIndex(["time", "result", "finish"]);
 
-      const bodyRows = Array.from(table.querySelectorAll("tbody tr")).slice(0, 3);
-      return bodyRows.map(tr => {
-        const tds = Array.from(tr.querySelectorAll("td"));
-        const safeText = td => (td ? td.innerText.replace(/\s+/g, " ").trim() : "");
-        const name = nameIdx >= 0 && tds[nameIdx]
-          ? (tds[nameIdx].querySelector("a")?.innerText || tds[nameIdx].innerText)
-          : (tds.map(td => safeText(td)).find(v => /[A-Za-z]/.test(v) && !/^\d{1,2}:\d{2}/.test(v)) || "");
-        const time = timeIdx >= 0 && tds[timeIdx]
-          ? safeText(tds[timeIdx])
-          : (tds.map(td => safeText(td)).find(v => /^\d{1,2}:\d{2}/.test(v)) || "");
-        const rankText = tds.map(td => safeText(td)).find(v => /^\d+$/.test(v)) || "";
-        return { rank: rankText, name, time };
-      }).filter(r => r.name && r.time);
+      return Array.from(table.querySelectorAll("tbody tr"))
+        .slice(0, 3)
+        .map(tr => {
+          const tds = Array.from(tr.querySelectorAll("td"));
+          const text = td => td?.innerText.replace(/\s+/g, " ").trim() || "";
+          const name =
+            nameIdx >= 0
+              ? text(tds[nameIdx])
+              : tds.map(text).find(v => /[A-Za-z]/.test(v) && !/^\d{1,2}:\d{2}/.test(v)) || "";
+          const time =
+            timeIdx >= 0
+              ? text(tds[timeIdx])
+              : tds.map(text).find(v => /^\d{1,2}:\d{2}/.test(v)) || "";
+          const rank = tds.map(text).find(v => /^\d+$/.test(v)) || "";
+          return { rank, name, time };
+        })
+        .filter(r => r.name && r.time);
     });
 
     await browser.close();
@@ -111,8 +110,13 @@ async function scrapeSingle(url) {
 }
 
 /* -----------------------------------------------------------
-   🌍 URL Builders
+   🌍 URL Builders (Masters only)
 ----------------------------------------------------------- */
+const MASTERS_AGE_GROUPS = [
+  "45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79",
+  "50-59", "60-69" // legacy S7
+];
+
 function buildAllUrls() {
   const seasons = ["s7", "s8", "s9"];
   const years = [2025, 2026];
@@ -125,24 +129,18 @@ function buildAllUrls() {
     "hyrox-men", "hyrox-women",
     "hyrox-doubles-men", "hyrox-doubles-women", "hyrox-doubles-mixed"
   ];
-  const ageGroups = [
-    "16-24","25-29","30-34","35-39","40-44","45-49",
-    "50-54","55-59","60-64","65-69","70-74","75-79",
-    "50-59","60-69" // legacy S7 AGs
-  ];
 
   const urls = [];
   for (const s of seasons)
     for (const y of years)
       for (const city of cities)
         for (const div of divisions)
-          for (const ag of ageGroups)
+          for (const ag of MASTERS_AGE_GROUPS)
             urls.push(`https://www.hyresult.com/ranking/${s}-${y}-${city}-${div}?ag=${ag}`);
 
   return [...new Set(urls)];
 }
 
-/* ------------- Weekend-only builder (latest events) ------------- */
 function buildWeekendUrls() {
   const baseUrls = [
     "https://www.hyresult.com/ranking/s8-2025-paris-hyrox-men",
@@ -156,18 +154,16 @@ function buildWeekendUrls() {
     "https://www.hyresult.com/ranking/s8-2025-birmingham-hyrox-doubles-women",
     "https://www.hyresult.com/ranking/s8-2025-birmingham-hyrox-doubles-mixed",
   ];
-  const ageGroups = [
-    "16-24","25-29","30-34","35-39","40-44",
-    "45-49","50-54","55-59","60-64","65-69","70-74"
-  ];
 
   const urls = [];
-  baseUrls.forEach(base => ageGroups.forEach(ag => urls.push(`${base}?ag=${ag}`)));
+  baseUrls.forEach(base =>
+    MASTERS_AGE_GROUPS.forEach(ag => urls.push(`${base}?ag=${ag}`))
+  );
   return urls;
 }
 
 /* -----------------------------------------------------------
-   ⚙️ Smart Scrape (with deduplication)
+   ⚙️ Main Scraper (smart deduplication)
 ----------------------------------------------------------- */
 async function runFullScrape(urlList) {
   const urls = urlList || buildAllUrls();
@@ -215,7 +211,7 @@ async function runFullScrape(urlList) {
    🌐 API Routes
 ----------------------------------------------------------- */
 app.get("/", (_req, res) =>
-  res.send("✅ HYROX Scraper v23 — Full (S7–S9, Paris/Birmingham weekend supported)")
+  res.send("✅ HYROX Scraper v24 — Masters Edition (S7–S9, Solo & Doubles)")
 );
 
 app.get("/api/scrape-all", async (_req, res) => {
@@ -261,4 +257,4 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 /* -----------------------------------------------------------
    🚀 Launch
 ----------------------------------------------------------- */
-app.listen(PORT, () => console.log(`🔥 HYROX Scraper v23 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🔥 HYROX Scraper v24 running on port ${PORT}`));
