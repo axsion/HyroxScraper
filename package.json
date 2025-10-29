@@ -1,7 +1,7 @@
 {
   "name": "hyrox-scraper",
-  "version": "27.1.0",
-  "description": "HYROX Universal Scraper - Render Safe Auto-Year Edition",
+  "version": "27.3.0",
+  "description": "HYROX Universal Scraper - Render Finalized Version (forced Chromium install)",
   "main": "index.js",
   "type": "module",
   "scripts": {
