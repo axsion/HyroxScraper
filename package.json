@@ -1,13 +1,14 @@
 {
   "name": "hyrox-scraper",
-  "version": "20.2.1",
-  "type": "module",
+  "version": "27.1.0",
+  "description": "HYROX Universal Scraper - Render Safe Auto-Year Edition",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/.playwright node index.js"
   },
   "dependencies": {
     "express": "^4.19.2",
-    "playwright": "^1.47.2"
+    "playwright": "^1.45.2"
   }
 }
