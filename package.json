@@ -1,10 +1,11 @@
 {
   "name": "hyrox-scraper",
-  "version": "27.3.0",
-  "description": "HYROX Universal Scraper - Render Finalized Version (forced Chromium install)",
+  "version": "27.4.0",
+  "description": "HYROX Universal Scraper - Render Zero-Failure Version",
   "main": "index.js",
   "type": "module",
   "scripts": {
+    "postinstall": "npx playwright install chromium",
     "start": "PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/.playwright node index.js"
   },
   "dependencies": {
