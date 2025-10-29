@@ -146,6 +146,9 @@ async function scrapeSingle(url) {
 /* -----------------------------------------------------------
    🌍 Dynamic URL builder (2025–2026 and beyond)
 ----------------------------------------------------------- */
+/* -----------------------------------------------------------
+   🌍 Smarter URL Builder — covers s7–s9 efficiently
+----------------------------------------------------------- */
 function buildAllUrls() {
   const seasons = ["s7", "s8", "s9"];
   const years = [2025, 2026];
@@ -161,34 +164,47 @@ function buildAllUrls() {
   const ageGroups = [
     "16-24","25-29","30-34","35-39","40-44","45-49",
     "50-54","55-59","60-64","65-69","70-74","75-79",
-    // Legacy S7
+    // legacy S7 only:
     "50-59","60-69"
   ];
 
   const urls = [];
-  seasons.forEach(s =>
-    years.forEach(y =>
-      cities.forEach(city =>
-        divisions.forEach(div =>
-          ageGroups.forEach(ag => urls.push(`https://www.hyresult.com/ranking/${s}-${y}-${city}-${div}?ag=${ag}`))
-        )
-      )
-    )
-  );
-  return urls;
+  for (const s of seasons) {
+    for (const y of years) {
+      for (const city of cities) {
+        for (const div of divisions) {
+          for (const ag of ageGroups) {
+            urls.push(`https://www.hyresult.com/ranking/${s}-${y}-${city}-${div}?ag=${ag}`);
+          }
+        }
+      }
+    }
+  }
+
+  // Remove exact duplicates (some S7 combos repeat)
+  return [...new Set(urls)];
 }
 
 /* -----------------------------------------------------------
-   ⚙️ Scrape batch (skip cached)
+   ⚙️ Smart Scrape — avoids repetitive looping
 ----------------------------------------------------------- */
 async function runFullScrape() {
   const urls = buildAllUrls();
   const newEvents = [];
 
-  for (const url of urls) {
-    const rows = await scrapeSingle(url);
-    if (!rows.length) continue;
+  // Track last successfully scraped base (city + div) to skip redundant loops
+  const processedCombos = new Set();
 
+  for (const url of urls) {
+    const baseKey = url.replace(/\?ag=.*$/, ""); // same base across age-groups
+
+    // If we already confirmed this base has valid data, skip the rest
+    if (processedCombos.has(baseKey)) continue;
+
+    const rows = await scrapeSingle(url);
+    if (!rows || !rows.length) continue;
+
+    // Extract meta
     const cityMatch = url.match(/202\d-(.*?)-hyrox/i);
     const city = cityMatch ? cityMatch[1].replace(/-/g, " ").toUpperCase() : "UNKNOWN";
     const genderMatch = url.match(/(men|women|mixed)/i);
@@ -201,6 +217,7 @@ async function runFullScrape() {
 
     const eventName = `Ranking of ${year} ${city} HYROX ${type.toUpperCase()} ${gender}`;
     const key = `${eventName}_${category}`;
+
     if (cache.events.some(e => `${e.eventName}_${e.category}` === key)) {
       console.log(`⏩ Skipped cached ${key}`);
       continue;
@@ -219,13 +236,15 @@ async function runFullScrape() {
 
     cache.events.push(event);
     newEvents.push(event);
+    processedCombos.add(baseKey); // ✅ prevent further repeats for this base
     fs.writeFileSync(LAST_RUN_FILE, JSON.stringify(cache, null, 2));
     console.log(`✅ Added ${eventName} (${category})`);
   }
 
-  console.log(`🎯 Completed ${newEvents.length} new events.`);
+  console.log(`🎯 Completed ${newEvents.length} new events added.`);
   return newEvents;
 }
+
 
 /* -----------------------------------------------------------
    🌐  API routes
