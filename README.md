@@ -1,136 +1,179 @@
-🏋️ HYROX Scraper Ecosystem — 2025-2026 Edition
+🏋️‍♂️ HYROX Scraper System — Render + Google Sheets Integration (v25.1)
+📘 Overview
 
-This project automatically crawls HYROX race results (Solo + Doubles) from hyresult.com, stores them on a Render server, and syncs them with a Google Sheet.
-It is designed to run forever without modification as new events or seasons are released.
+This project automatically scrapes HYROX Solo and Double podiums from hyresult.com
+ for all Masters categories (45-79).
+It stores results on a Render server, syncs them to Google Sheets, and can restore data if the server resets.
 
-📁 Project Overview
-Component	Location	Purpose
-index.js	Render (Node.js server)	Crawls HYROX results using Playwright; saves all events to data/last-run.json; exposes REST API endpoints.
-package.json	Render	Declares Node dependencies and ensures Playwright auto-installs Chromium on Render free tier.
-Code.gs (Google Sheets App Script)	Your Google Sheet → Extensions → Apps Script	Connects the sheet to Render. Fetches new events, appends them to the correct sheet tabs, and restores cache after Render restarts.
-⚙️ 1. Deploying the Server on Render
+The system is composed of three coordinated parts:
 
-Go to Render.com
- → New Web Service
+File	Purpose
+index.js	Main Node/Express scraper running on Render (scrapes results, stores cache).
+package.json	Node dependencies and launch configuration for Render.
+Google Apps Script	Connects your Google Sheet to the Render API — imports new results and restores cache automatically.
+🧱 1. index.js (Render Server)
 
-Connect your GitHub repo or manually upload index.js and package.json
+Purpose:
+Scrapes all HYROX podiums, saves results to /data/last-run.json, and exposes a REST API used by your Google Sheet.
 
-Runtime: Node 22 + Playwright
+Key features:
 
-Build Command:
+Auto-installs Chromium on Render (works even on free tier).
 
-npx playwright install chromium
+Supports all Masters age groups:
 
-
-Start Command:
-
-PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/.playwright node index.js
-
-
-Deploy → you should see in logs:
-
-✅ Chromium already installed.
-🔥 HYROX Scraper v22 running on port 10000
+45-49, 50-54, 55-59, 60-64, 65-69, 70-74, 75-79
+50-59, 60-69 (legacy s7)
 
 
-✅ Once live, your base URL will look like:
+Crawls both Solo and Double events.
 
-https://hyroxseasonscraper.onrender.com
+Provides multiple endpoints for control and health checking.
 
-🌐 2. Server Endpoints
-Endpoint	Description	When to use
-/	Health landing page	Quick “is server alive?” check
-/api/health	Returns { ok: true }	For monitoring
-/api/last-run	Returns all cached events in JSON	Used by Google Sheet
-/api/scrape-all	Launches a full crawl (Solo + Double + all cities + seasons S7–S9)	Run manually when new events are added
-/api/set-initial-cache	Accepts POST payload { events:[…] } to restore cache	Used by syncExistingEventsToServer() if Render restarts
-/api/clear-cache	Clears all stored events	Maintenance only
+🔗 API Endpoints
+Endpoint	Description
+/api/scrape-all	Full crawl of all known events (2025 + 2026). Saves all Masters categories.
+/api/scrape-weekend	Crawls only the latest weekend events (Paris, Birmingham, etc.).
+/api/last-run	Returns JSON of all cached events. Used by Google Sheet.
+/api/set-initial-cache	Accepts cache upload from Google Sheet (syncExistingEventsToServer()).
+/api/clear-cache	Deletes local cache (last-run.json) — use for full re-scan.
+/api/health	Simple JSON response to check if the Render server is online.
+🚀 Render Configuration
 
-🟡 (Optional)
-You can later add /api/scrape-weekend if you want to crawl only the most recent competitions (e.g. Paris + Birmingham).
+Environment:
 
-📄 3. Google Sheet Integration
-Step 1 — Prepare your sheet
+{
+  "scripts": {
+    "start": "PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/.playwright node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "playwright": "^1.47.2"
+  }
+}
 
-Create or open a Google Sheet with these exact headers in row 1:
 
-Event plus Cat | Event | City | Date | Category | Gender | Gold | Time1 | Silver | Time2 | Bronze | Time3
+Render automatically installs dependencies and starts the scraper.
+If the service idles and restarts, the cache (/data/last-run.json) will be cleared —
+so you’ll need to restore it from Google Sheets (see below).
+
+📗 2. Google Apps Script (Sheet Integration)
+
+Purpose:
+Bridges your Google Sheet and Render scraper.
+
+Sheets used:
+
+Podiums → all Solo results
+
+Double-2025 → all Doubles results
+
+Main functions:
+Function	Description
+updateHyroxResults()	Pulls the latest data from /api/last-run and appends only new rows.
+syncExistingEventsToServer()	Uploads all podiums from both sheets to Render in safe batches (restores cache).
+clearServerCache()	Clears /data/last-run.json remotely.
+checkServerHealth()	Verifies that Render is online and responsive.
+🧩 How batch upload works
+
+Uploads data in chunks of 150 events each to avoid “Payload Too Large (413)” errors.
+
+Each batch is confirmed via a "✅ Cache restored" response.
+
+Automatically pauses 1.5 s between batches to avoid rate-limits.
+
+🔄 3. Operating Workflow
+
+Follow this order to safely crawl, sync, and maintain your data:
+
+🏁 A. Run a crawl (server-side)
+
+Visit one of these URLs:
+
+Full crawl:
+
+https://hyroxseasonscraper.onrender.com/api/scrape-all
 
 
-Create 3 tabs:
+Latest weekend only:
 
-Podiums → for Solo 2025
+https://hyroxseasonscraper.onrender.com/api/scrape-weekend
 
-Double-2025 → for Doubles 2025
 
-Solo-2026 / Double-2026 → for next season (optional)
+Wait for completion — check Render logs for “🎯 Scrape complete”.
 
-Step 2 — Install the Apps Script
+📥 B. Import results into Google Sheets
 
-In the Sheet → Extensions → Apps Script
+In your Sheet, open Extensions → Apps Script.
 
-Replace all code with the contents of your Code.gs (header-aligned version)
+Run:
 
-Save → click Run → updateHyroxResults()
-Grant permissions if prompted.
+updateHyroxResults();
 
-Step 3 — Link to Render
 
-Make sure BASE_URL at the top of the script matches your deployed endpoint:
+New podiums (Solo → Podiums, Doubles → Double-2025) are appended.
+Existing ones are skipped automatically.
 
-const BASE_URL = "https://hyroxseasonscraper.onrender.com";
+💾 C. Restore cache after Render restart
 
-Step 4 — Available functions
-Function	What it does	When to run
-updateHyroxResults()	Fetches /api/last-run from Render and appends new rows only	Daily or weekly (can schedule trigger)
-syncExistingEventsToServer()	Sends all existing Sheet data back to Render to rebuild its cache	Run once after a Render restart or fresh deployment
-🚀 Typical Workflow
-Step	Action	Result
-1	Deploy index.js + package.json on Render	Server live, ready to scrape
-2	Visit /api/scrape-all once	Crawls every HYROX 2025–2026 event
-3	Open your Google Sheet → Run updateHyroxResults()	Adds podium data to correct tabs
-4	(If Render restarts) Run syncExistingEventsToServer()	Repopulates server cache from Sheet
-5	Optionally schedule updateHyroxResults() trigger (e.g. daily @ 6 AM)	Keeps Sheet up to date automatically
-🧠 How the pieces talk
-[HYROX Website] ─▶ (Playwright crawler in index.js)
-       │
-       ▼
-[data/last-run.json]  ← cache of all podiums
-       │
-   (served by Render API)
-       │
-       ▼
-[Google Sheets Apps Script]
-       │
-       ▼
-[Sheets tabs: Podiums / Double-2025 / Solo-2026]
+Whenever Render redeploys or idles out:
 
-🧩 Error handling tips
-Symptom	Likely cause	Fix
-Google Sheet shows “Internal Server Error 500”	Server rejected malformed event data	Replace syncExistingEventsToServer() with sanitized version (already in v21 script)
-Rows appear but names missing	HYROX page structure changed	Update scrapeSingle() in index.js (header-aware version provided)
-Render log shows “Executable doesn’t exist … headless_shell”	Browser missing	Re-deploy with npx playwright install chromium in build step
-Duplicate rows	Cache cleared or sheet header mismatch	Confirm headers & rerun syncExistingEventsToServer()
-🔄 Automation suggestion
+In your Sheet, run:
 
-Set up a time-based trigger in Apps Script:
+syncExistingEventsToServer();
 
-Function: updateHyroxResults
 
-Frequency: Every 6 hours
-✅ Your sheet will always reflect the latest podiums automatically.
+The function re-uploads all events in batches (~150 each).
 
-🧩 File summary
-File	Role	Key Dependencies
-index.js	Node.js Express + Playwright crawler + API	express, playwright, fs, path
-package.json	Declares dependencies, ensures browser auto-install	"type": "module", Playwright pinned
-Code.gs	Connects Google Sheet to Render API	UrlFetchApp (Google Apps Script built-in)
-✅ Quick verification checklist
+You’ll see logs like:
 
-https://hyroxseasonscraper.onrender.com/api/health → { ok: true }
+✅ Uploaded batch 1 …
+✅ Uploaded batch 2 …
+🎯 Sync complete — 595 total events sent.
 
-https://hyroxseasonscraper.onrender.com/api/last-run → shows cached JSON
 
-Run updateHyroxResults() → rows added correctly
+Your Render cache (/data/last-run.json) is now repopulated.
 
-syncExistingEventsToServer() → returns ✅ Cache restored
+🧹 D. Optional maintenance tasks
+Action	How	When
+Clear cache	Run /api/clear-cache or call clearServerCache()	Before a full re-scan
+Check server health	Run checkServerHealth()	Anytime before syncing
+View raw data	Visit /api/last-run	To inspect cached JSON
+🧠 Best Practices
+
+✅ After every crawl — always run updateHyroxResults()
+✅ After every Render restart — run syncExistingEventsToServer()
+✅ Never edit rows manually unless you understand the structure
+✅ Keep “Podiums” and “Double-2025” headers identical (for consistent merging)
+
+🩵 Troubleshooting
+Symptom	Likely Cause	Fix
+413 Payload Too Large	Batch size too high or server limit too low	Use chunkSize = 150 and ensure express.json({ limit: "20mb" })
+Fetch failed (403/404)	Wrong BASE_URL in Apps Script	Update to your live Render URL
+No new rows added	All events already cached	Clear cache or wait for new HYROX events
+Render logs show “Installing Chromium” repeatedly	Normal on free tier (temporary filesystem)	
+🧾 Example Post-Crawl Summary
+
+After your typical weekend workflow:
+
+✅ HYROX Scraper v25.1 running on port 10000
+🔎 Scraping https://www.hyresult.com/ranking/s8-2025-paris-hyrox-doubles-men?ag=50-54
+✅ Added Ranking of 2025 PARIS HYROX DOUBLE MEN (50-54)
+🎯 Scrape complete — 10 new events added.
+
+[Google Sheet logs]
+✅ Uploaded batch 1: {"status":"✅ Cache restored","count":250}
+✅ Uploaded batch 2: {"status":"✅ Cache restored","count":250}
+✅ Uploaded batch 3: {"status":"✅ Cache restored","count":95}
+🎯 Sync complete — 595 total events sent.
+
+✅ In Summary
+Step	You run	Purpose
+1️⃣	/api/scrape-weekend	Crawl new Masters podiums
+2️⃣	updateHyroxResults()	Append to Google Sheets
+3️⃣	(After restart) syncExistingEventsToServer()	Restore cache
+4️⃣	Optional: /api/clear-cache	Force fresh crawl
+
+💡 Result:
+You now have a complete, automated, bilingual-ready HYROX data pipeline —
+from official results to your Google Sheets dashboard — fully restart-safe and expandable for 2025 + 2026 seasons.
