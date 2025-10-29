@@ -11,7 +11,7 @@ import { chromium } from "playwright";
 import { execSync } from "child_process";
 import fs from "fs";
 import path from "path";
-import fetch from "node-fetch";
+//import fetch from "node-fetch";
 
 const app = express();
 const PORT = process.env.PORT || 10000;
