@@ -58,7 +58,7 @@ if (fs.existsSync(CACHE_FILE)) {
    🌍 Load event URLs from GitHub
 ----------------------------------------------------------- */
 const EVENTS_TXT_URL =
-  "https://github.com/axsion/HyroxScraper/blob/main/events.txt"; // ⬅️ replace with your real path
+  "https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt"; // ⬅️ replace with your real path
 
 async function fetchEventList() {
   try {
