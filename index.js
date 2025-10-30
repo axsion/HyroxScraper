@@ -41,11 +41,11 @@ function looksLikeName(s) {
   return /[A-Za-z]/.test(s) && !looksLikeTime(s) && !/^(\d+|DNF|DSQ)$/i.test(s);
 }
 
-/* -----------------------------------------------------------
-   🕷️ Discover All Past Event Slugs (deep DOM version)
------------------------------------------------------------ */
+// ──────────────────────────────────────────────
+// Discover past event slugs (Resilient v28.6)
+// ──────────────────────────────────────────────
 async function discoverPastSlugs() {
-  console.log("🌐 Discovering past events from /events?tab=past (deep DOM scan)...");
+  console.log("🌐 Discovering past events from /events?tab=past (resilient scan)...");
   const browser = await chromium.launch({
     headless: true,
     args: ["--no-sandbox", "--disable-dev-shm-usage"],
@@ -54,37 +54,53 @@ async function discoverPastSlugs() {
 
   try {
     await page.goto("https://www.hyresult.com/events?tab=past", {
-      waitUntil: "networkidle",
-      timeout: 120000,
+      waitUntil: "domcontentloaded",
+      timeout: 180000,
     });
 
-    await page.waitForSelector("a[href*='/ranking/']", { timeout: 60000 });
+    // Force client-side rendering by interacting
+    await page.waitForTimeout(4000);
+    await page.mouse.wheel(0, 3000);
+    await page.waitForTimeout(3000);
 
-    // Scroll until all lazy-loaded events are visible
+    // Sometimes links load only after a scroll to bottom
     let prevHeight = 0;
-    while (true) {
+    for (let i = 0; i < 25; i++) {
       const currentHeight = await page.evaluate(() => {
-        window.scrollBy(0, 1500);
+        window.scrollBy(0, 1000);
         return document.body.scrollHeight;
       });
       if (currentHeight === prevHeight) break;
       prevHeight = currentHeight;
-      await page.waitForTimeout(1800);
+      await page.waitForTimeout(2000);
     }
 
-    // Extract unique event slugs
-    const slugs = await page.$$eval("a[href*='/ranking/']", (links) => {
-      const results = new Set();
-      for (const a of links) {
-        const href = a.getAttribute("href");
-        if (!href) continue;
-        const m = href.match(/\/ranking\/(s\d{1,2}-\d{4}-[a-z-]+)-hyrox/i);
-        if (m) results.add(m[1]);
+    // Try to detect event links, with retries
+    let retries = 0;
+    let slugs = [];
+    while (slugs.length === 0 && retries < 3) {
+      try {
+        await page.waitForSelector("a[href*='/ranking/']", { timeout: 60000 });
+        slugs = await page.$$eval("a[href*='/ranking/']", (links) => {
+          const results = new Set();
+          for (const a of links) {
+            const href = a.getAttribute("href");
+            if (!href) continue;
+            const match = href.match(/\/ranking\/(s\d{1,2}-\d{4}-[a-z-]+)-hyrox/i);
+            if (match) results.add(match[1]);
+          }
+          return Array.from(results);
+        });
+      } catch {
+        retries++;
+        console.log(`⚠️ Retry ${retries}/3 — waiting for event cards...`);
+        await page.waitForTimeout(5000);
       }
-      return Array.from(results);
-    });
+    }
 
-    console.log(`🌍 Found ${slugs.length} event slugs.`);
+    if (!slugs.length) console.warn("⚠️ Still no slugs found after retries.");
+    else console.log(`🌍 Found ${slugs.length} event slugs.`);
+
     await browser.close();
     return slugs;
   } catch (err) {
