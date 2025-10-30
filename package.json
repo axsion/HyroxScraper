@@ -1,6 +1,6 @@
 {
   "name": "hyrox-scraper",
-  "version": "31.1.0",
+  "version": "31.2.0",
   "main": "index.js",
   "scripts": { "start": "node index.js" },
   "dependencies": {
