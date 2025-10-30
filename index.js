@@ -1,15 +1,15 @@
 /**
- * HYROX Scraper v30.5 — Season-aware + Render-proof
+ * HYROX Scraper v30.6 — Season-aware + Render-proof
  * -------------------------------------------------
- * ✅ Uses @playwright/browser-chromium (no root install)
+ * ✅ Uses embedded Chromium via @playwright/browser-chromium
  * ✅ Auto-detects S7 vs S8 age groups
  * ✅ Reads events.txt dynamically from GitHub
- * ✅ Supports full scrape, diagnostics, cache, and health
+ * ✅ Supports diagnostics, full scrape, cache, and health
  */
 
 import express from "express";
 import fetch from "node-fetch";
-import { chromium } from "@playwright/browser-chromium";
+import playwright from "@playwright/browser-chromium"; // ✅ Correct import
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -142,7 +142,8 @@ async function runFullScrape() {
   }
 
   console.log(`🌍 Loaded ${slugs.length} events from GitHub`);
-  const browser = await chromium.launch({ headless: true });
+  const browser = await playwright.launch({ headless: true }); // ✅ Correct launch
+  console.log("✅ Using embedded Chromium via @playwright/browser-chromium");
   const all = [];
 
   for (const slug of slugs) {
@@ -217,8 +218,8 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
    🚀 Start server
 ----------------------------------------------------------- */
 app.listen(PORT, () => {
-  console.log(`🔥 HYROX Scraper v30.5 running on port ${PORT}`);
-  console.log("✅ Using portable Chromium — no install step required");
+  console.log(`🔥 HYROX Scraper v30.6 running on port ${PORT}`);
+  console.log("✅ Using embedded Chromium — no install step required");
   console.log("✅ Season-aware AG detection active (S7 vs S8)");
   console.log("✅ Diagnostic route enabled: /api/check-events");
 });
