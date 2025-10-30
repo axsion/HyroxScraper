@@ -34,8 +34,11 @@ if (fs.existsSync(LAST_RUN_FILE)) {
 /* -----------------------------------------------------------
    🕷️ Stage 1: Discover /event/ slugs from "past" page
 ----------------------------------------------------------- */
+// ──────────────────────────────────────────────
+// Discover /event/ slugs reliably (v28.8)
+// ──────────────────────────────────────────────
 async function discoverEventPages() {
-  console.log("🌐 Discovering event pages from /events?tab=past...");
+  console.log("🌐 Discovering /event/ pages from https://www.hyresult.com/events?tab=past ...");
   const browser = await chromium.launch({
     headless: true,
     args: ["--no-sandbox", "--disable-dev-shm-usage"],
@@ -44,35 +47,49 @@ async function discoverEventPages() {
 
   try {
     await page.goto("https://www.hyresult.com/events?tab=past", {
-      waitUntil: "networkidle",
-      timeout: 120000,
+      waitUntil: "domcontentloaded",
+      timeout: 180000,
     });
 
-    // scroll until fully loaded (React lazy load)
-    let prevHeight = 0;
-    while (true) {
-      const currentHeight = await page.evaluate(() => {
-        window.scrollBy(0, 1500);
-        return document.body.scrollHeight;
-      });
-      if (currentHeight === prevHeight) break;
-      prevHeight = currentHeight;
-      await page.waitForTimeout(1800);
+    console.log("⏳ Waiting for event cards to render...");
+    await page.waitForTimeout(8000); // let React hydrate
+
+    // Try waiting explicitly for the event cards or anchor tags
+    try {
+      await page.waitForSelector("a[href*='/event/'], .MuiCard-root", { timeout: 90000 });
+    } catch {
+      console.warn("⚠️ Event cards not detected yet, continuing anyway...");
     }
 
-    // extract /event/s* slugs
-    const slugs = await page.$$eval("a[href*='/event/s']", (links) => {
+    // Slowly scroll down to trigger lazy loading
+    let prevHeight = 0;
+    for (let i = 0; i < 40; i++) {
+      const newHeight = await page.evaluate(() => {
+        window.scrollBy(0, 1200);
+        return document.body.scrollHeight;
+      });
+      if (newHeight === prevHeight) break;
+      prevHeight = newHeight;
+      await page.waitForTimeout(1500);
+    }
+
+    // Give React a moment to finalize updates
+    await page.waitForTimeout(3000);
+
+    // Collect all hrefs, even if not visible
+    const slugs = await page.evaluate(() => {
       const results = new Set();
-      for (const a of links) {
+      document.querySelectorAll("a[href*='/event/']").forEach(a => {
         const href = a.getAttribute("href");
-        if (!href) continue;
-        const match = href.match(/\/event\/(s\d{1,2}-\d{4}-[a-z-]+-hyrox)/i);
-        if (match) results.add(match[1]);
-      }
+        if (href) {
+          const match = href.match(/\/event\/(s\d{1,2}-\d{4}-[a-z-]+-hyrox)/i);
+          if (match) results.add(match[1]);
+        }
+      });
       return Array.from(results);
     });
 
-    console.log(`🌍 Found ${slugs.length} /event/ pages.`);
+    console.log(`🌍 Found ${slugs.length} event pages.`);
     await browser.close();
     return slugs;
   } catch (err) {
@@ -81,6 +98,7 @@ async function discoverEventPages() {
     return [];
   }
 }
+
 
 /* -----------------------------------------------------------
    🕸️ Stage 2: Crawl ranking results per event
