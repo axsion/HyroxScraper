@@ -1,15 +1,17 @@
 /**
- * HYROX Scraper v30.7 — Season-aware + Render-safe
+ * HYROX Scraper v30.8 — Season-aware + Render-safe
  * -------------------------------------------------
- * ✅ Uses CommonJS require (works in Node 25)
- * ✅ Embedded Chromium via @playwright/browser-chromium
- * ✅ Auto-detects S7 vs S8 age groups
+ * ✅ CommonJS (works with Node 25+)
+ * ✅ Uses embedded Chromium from @playwright/browser-chromium
  * ✅ Reads events.txt dynamically from GitHub
+ * ✅ Auto-detects S7 vs S8 age groups
  */
 
 const express = require("express");
 const fetch = require("node-fetch");
-const chromium = require("@playwright/browser-chromium");
+
+// ✅ Correct Playwright usage
+const { chromium } = require("@playwright/browser-chromium");
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -23,10 +25,9 @@ const GENDERS = ["men", "women"];
 const DOUBLE_GENDERS = ["men", "women", "mixed"];
 const TYPES = ["Solo", "Double"];
 
-// --- Season-specific AGs ---
+// --- Season-specific age groups ---
 const AG_S8 = ["45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79"];
 const AG_S7 = ["50-59", "60-69"];
-
 function ageGroupsFor(url) {
   return /\/s7-/.test(url) ? AG_S7 : AG_S8;
 }
@@ -42,8 +43,14 @@ async function loadEventSlugs() {
     if (!res.ok) throw new Error(`Failed to fetch events.txt (${res.status})`);
     const text = await res.text();
     const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    const valid = lines.filter(l => /^https:\/\/www\.hyresult\.com\/ranking\//.test(l));
-    const invalid = lines.filter(l => !/^https:\/\/www\.hyresult\.com\/ranking\//.test(l));
+
+    const valid = lines.filter(l =>
+      /^https:\/\/www\.hyresult\.com\/ranking\//.test(l)
+    );
+    const invalid = lines.filter(l =>
+      !/^https:\/\/www\.hyresult\.com\/ranking\//.test(l)
+    );
+
     console.log(`📄 Found ${valid.length} valid URLs, ${invalid.length} invalid`);
     if (invalid.length) console.log("⚠️ Invalid lines:\n", invalid.join("\n"));
     return valid;
@@ -62,7 +69,7 @@ async function scrapeEvent(browser, baseUrl) {
   const yearMatch = baseUrl.match(/s\d+-(\d{4})/);
   const year = yearMatch ? yearMatch[1] : "2025";
   const agList = ageGroupsFor(baseUrl);
-  console.log(`🧭 Season-detected AGs for ${baseUrl}: ${agList.join(", ")}`);
+  console.log(`🧭 AGs for ${baseUrl}: ${agList.join(", ")}`);
 
   const page = await browser.newPage();
 
@@ -78,16 +85,23 @@ async function scrapeEvent(browser, baseUrl) {
           const podium = await page.$$eval("table tbody tr", rows =>
             rows.slice(0, 3).map(r => {
               const c = r.querySelectorAll("td");
-              return { name: c[1]?.innerText.trim() || "", time: c[3]?.innerText.trim() || "" };
+              return {
+                name: c[1]?.innerText.trim() || "",
+                time: c[3]?.innerText.trim() || ""
+              };
             })
           );
           if (podium.length) {
             const entry = {
               key: `${baseUrl}_${cat}_${type}_${gender}`,
               eventName: `Ranking of ${year} ${city} HYROX ${type.toUpperCase()} ${gender.toUpperCase()}`,
-              city, year, category: cat,
+              city,
+              year,
+              category: cat,
               gender: gender[0].toUpperCase() + gender.slice(1),
-              type, podium, url
+              type,
+              podium,
+              url
             };
             results.push(entry);
             console.log(`✅ Added ${entry.eventName} (${cat})`);
@@ -112,14 +126,17 @@ async function runFullScrape() {
     console.log("⚠️ No valid event URLs — aborting.");
     return [];
   }
+
   console.log(`🌍 Loaded ${slugs.length} events from GitHub`);
-  const browser = await chromium.launch({ headless: true });
-  console.log("✅ Using embedded Chromium via @playwright/browser-chromium");
+  const browser = await chromium.launch({ headless: true }); // ✅ Correct launcher
+  console.log("✅ Using embedded Chromium (no install step needed)");
+
   const all = [];
   for (const slug of slugs) {
     const data = await scrapeEvent(browser, slug);
     all.push(...data);
   }
+
   await browser.close();
   cache = all;
   console.log(`🎯 Crawl complete — ${cache.length} podiums cached`);
@@ -134,8 +151,12 @@ app.get("/api/check-events", async (_req, res) => {
     const resTxt = await fetch(EVENTS_FILE_URL);
     const text = await resTxt.text();
     const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    const valid = lines.filter(l => /^https:\/\/www\.hyresult\.com\/ranking\//.test(l));
-    const invalid = lines.filter(l => !/^https:\/\/www\.hyresult\.com\/ranking\//.test(l));
+    const valid = lines.filter(l =>
+      /^https:\/\/www\.hyresult\.com\/ranking\//.test(l)
+    );
+    const invalid = lines.filter(l =>
+      !/^https:\/\/www\.hyresult\.com\/ranking\//.test(l)
+    );
     res.json({
       source: EVENTS_FILE_URL,
       total: lines.length,
@@ -159,7 +180,11 @@ app.get("/api/scrape-all", async (_req, res) => {
   }
 });
 
-app.get("/api/clear-cache", (_req, res) => { cache = []; res.json({ status: "✅ Cache cleared" }); });
+app.get("/api/clear-cache", (_req, res) => {
+  cache = [];
+  res.json({ status: "✅ Cache cleared" });
+});
+
 app.get("/api/last-run", (_req, res) => res.json(cache));
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
@@ -167,9 +192,9 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
    🚀 Start server
 ----------------------------------------------------------- */
 app.listen(PORT, () => {
-  console.log(`🔥 HYROX Scraper v30.7 running on port ${PORT}`);
+  console.log(`🔥 HYROX Scraper v30.8 running on port ${PORT}`);
   console.log("✅ CommonJS mode (Render-safe)");
-  console.log("✅ Embedded Chromium — no install needed");
+  console.log("✅ Embedded Chromium launcher");
   console.log("✅ Season-aware AG detection active (S7 vs S8)");
-  console.log("✅ Diagnostic route enabled: /api/check-events");
+  console.log("✅ Diagnostic route: /api/check-events");
 });
