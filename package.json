@@ -1,15 +1,16 @@
 {
   "name": "hyrox-scraper",
-  "version": "27.4.0",
-  "description": "HYROX Universal Scraper - Render Zero-Failure Version",
-  "main": "index.js",
+  "version": "28.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=20.x"
+  },
   "scripts": {
-    "postinstall": "npx playwright install chromium",
+    "postinstall": "PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/.playwright npx playwright install --with-deps chromium",
     "start": "PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/.playwright node index.js"
   },
   "dependencies": {
     "express": "^4.19.2",
-    "playwright": "^1.45.2"
+    "playwright": "^1.48.2"
   }
 }
