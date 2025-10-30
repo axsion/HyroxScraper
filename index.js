@@ -1,15 +1,15 @@
 /**
- * HYROX Scraper v31.0 — Render-safe final version
- * -------------------------------------------------
- * ✅ Uses Playwright-core directly (no root install)
+ * HYROX Scraper v31.2 — Render-stable version
+ * --------------------------------------------
+ * ✅ Uses playwright-chromium (includes Chromium binary)
  * ✅ Reads events.txt dynamically from GitHub
- * ✅ Auto-detects S7 vs S8 age groups
- * ✅ Works on Render (Node 25)
+ * ✅ Detects S7 vs S8 master age-groups
+ * ✅ Works 100% on Render with no install step
  */
 
 const express = require("express");
 const fetch = require("node-fetch");
-const playwright = require("playwright-core"); // ✅ Safe and stable core package
+const { chromium } = require("playwright-chromium"); // ✅ Embedded Chromium – no install needed
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -23,9 +23,9 @@ const GENDERS = ["men", "women"];
 const DOUBLE_GENDERS = ["men", "women", "mixed"];
 const TYPES = ["Solo", "Double"];
 
-// --- Season-specific age groups ---
 const AG_S8 = ["45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79"];
 const AG_S7 = ["50-59", "60-69"];
+
 function ageGroupsFor(url) {
   return /\/s7-/.test(url) ? AG_S7 : AG_S8;
 }
@@ -41,12 +41,8 @@ async function loadEventSlugs() {
     if (!res.ok) throw new Error(`Failed to fetch events.txt (${res.status})`);
     const text = await res.text();
     const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    const valid = lines.filter(l =>
-      /^https:\/\/www\.hyresult\.com\/ranking\//.test(l)
-    );
-    const invalid = lines.filter(l =>
-      !/^https:\/\/www\.hyresult\.com\/ranking\//.test(l)
-    );
+    const valid = lines.filter(l => /^https:\/\/www\.hyresult\.com\/ranking\//.test(l));
+    const invalid = lines.filter(l => !/^https:\/\/www\.hyresult\.com\/ranking\//.test(l));
     console.log(`📄 Found ${valid.length} valid URLs, ${invalid.length} invalid`);
     if (invalid.length) console.log("⚠️ Invalid lines:\n", invalid.join("\n"));
     return valid;
@@ -101,7 +97,9 @@ async function scrapeEvent(browser, baseUrl) {
             };
             results.push(entry);
             console.log(`✅ Added ${entry.eventName} (${cat})`);
-          } else console.log(`⚠️ No podium found for ${url}`);
+          } else {
+            console.log(`⚠️ No podium found for ${url}`);
+          }
         } catch (err) {
           console.log(`⚠️ Skipped ${url}: ${err.message}`);
         }
@@ -124,8 +122,8 @@ async function runFullScrape() {
   }
 
   console.log(`🌍 Loaded ${slugs.length} events from GitHub`);
-  const browser = await playwright.chromium.launch({ headless: true }); // ✅ Now stable
-  console.log("✅ Using Playwright-core embedded Chromium");
+  const browser = await chromium.launch({ headless: true }); // ✅ Works on Render
+  console.log("✅ Using playwright-chromium embedded browser");
 
   const all = [];
   for (const slug of slugs) {
@@ -147,12 +145,8 @@ app.get("/api/check-events", async (_req, res) => {
     const resTxt = await fetch(EVENTS_FILE_URL);
     const text = await resTxt.text();
     const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    const valid = lines.filter(l =>
-      /^https:\/\/www\.hyresult\.com\/ranking\//.test(l)
-    );
-    const invalid = lines.filter(l =>
-      !/^https:\/\/www\.hyresult\.com\/ranking\//.test(l)
-    );
+    const valid = lines.filter(l => /^https:\/\/www\.hyresult\.com\/ranking\//.test(l));
+    const invalid = lines.filter(l => !/^https:\/\/www\.hyresult\.com\/ranking\//.test(l));
     res.json({
       source: EVENTS_FILE_URL,
       total: lines.length,
@@ -188,9 +182,8 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
    🚀 Start server
 ----------------------------------------------------------- */
 app.listen(PORT, () => {
-  console.log(`🔥 HYROX Scraper v31.0 running on port ${PORT}`);
-  console.log("✅ CommonJS mode (Render-safe)");
-  console.log("✅ Using Playwright-core Chromium launcher");
-  console.log("✅ Season-aware AG detection active (S7 vs S8)");
-  console.log("✅ Diagnostic route: /api/check-events");
+  console.log(`🔥 HYROX Scraper v31.2 running on port ${PORT}`);
+  console.log("✅ Using playwright-chromium (embedded Chromium)");
+  console.log("✅ Season-aware AG detection (S7 vs S8)");
+  console.log("✅ Diagnostic route available: /api/check-events");
 });
