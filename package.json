@@ -1,6 +1,8 @@
 {
   "name": "hyrox-scraper",
-  "version": "30.1.0",
+  "version": "30.2.0",
+  "description": "HYROX Results Scraper — GitHub-driven + Render Self-Healing",
+  "main": "index.js",
   "type": "module",
   "scripts": {
     "start": "PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/.playwright node index.js"
