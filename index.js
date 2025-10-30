@@ -1,10 +1,10 @@
 /**
- * HYROX Scraper v31.3 — Render-stable FINAL
- * -----------------------------------------
- * ✅ Automatically installs Chromium at runtime if missing
- * ✅ Uses playwright-core + dynamic installer
+ * HYROX Scraper v31.4 — Non-root Render-Stable
+ * --------------------------------------------
+ * ✅ Installs Chromium in user-space (no root)
+ * ✅ Works on Render free-tier
  * ✅ Reads events.txt from GitHub
- * ✅ Works on Render after redeploy without root or su
+ * ✅ Supports both S7 and S8 age groups
  */
 
 const express = require("express");
@@ -13,7 +13,6 @@ const { execSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
-let chromium = null;
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
@@ -32,37 +31,33 @@ function ageGroupsFor(url) {
   return /\/s7-/.test(url) ? AG_S7 : AG_S8;
 }
 
+let chromium = null;
 let cache = [];
 
 /* -----------------------------------------------------------
-   ⚙️ Ensure Playwright Chromium is installed
+   🧩 Ensure Chromium is installed (non-root)
 ----------------------------------------------------------- */
 async function ensureChromiumInstalled() {
   try {
-    const browserPath = path.join(
-      process.cwd(),
-      "node_modules",
-      ".cache",
-      "ms-playwright"
-    );
-    const chromeBinary = path.join(
-      browserPath,
+    const baseDir = path.join(process.cwd(), ".playwright");
+    const chromePath = path.join(
+      baseDir,
       "chromium-1124",
       "chrome-linux",
       "chrome"
     );
-    if (!fs.existsSync(chromeBinary)) {
-      console.log("🧩 Installing Chromium for Playwright...");
-      execSync("npx playwright install --with-deps chromium", {
-        stdio: "inherit",
-      });
-      console.log("✅ Chromium installation completed.");
+
+    if (!fs.existsSync(chromePath)) {
+      console.log("🧩 Installing user-space Chromium (no root)...");
+      execSync("npx playwright install chromium", { stdio: "inherit" });
+      console.log("✅ Chromium installed successfully.");
     } else {
-      console.log("✅ Chromium binary already present.");
+      console.log("✅ Chromium already installed.");
     }
+
     chromium = require("playwright-core").chromium;
   } catch (err) {
-    console.error("❌ Chromium installation failed:", err.message);
+    console.error("❌ Failed to install Chromium:", err.message);
     throw err;
   }
 }
@@ -79,10 +74,7 @@ async function loadEventSlugs() {
     const valid = lines.filter(l =>
       /^https:\/\/www\.hyresult\.com\/ranking\//.test(l)
     );
-    const invalid = lines.filter(l =>
-      !/^https:\/\/www\.hyresult\.com\/ranking\//.test(l)
-    );
-    console.log(`📄 Found ${valid.length} valid URLs, ${invalid.length} invalid`);
+    console.log(`📄 Found ${valid.length} valid URLs`);
     return valid;
   } catch (err) {
     console.error("❌ Error loading events.txt:", err.message);
@@ -91,7 +83,7 @@ async function loadEventSlugs() {
 }
 
 /* -----------------------------------------------------------
-   🕷️ Scrape a single event page
+   🕷️ Scrape a single event
 ----------------------------------------------------------- */
 async function scrapeEvent(browser, baseUrl) {
   const results = [];
@@ -99,10 +91,8 @@ async function scrapeEvent(browser, baseUrl) {
   const yearMatch = baseUrl.match(/s\d+-(\d{4})/);
   const year = yearMatch ? yearMatch[1] : "2025";
   const agList = ageGroupsFor(baseUrl);
-  console.log(`🧭 AGs for ${baseUrl}: ${agList.join(", ")}`);
 
   const page = await browser.newPage();
-
   for (const type of TYPES) {
     const genderSet = type === "Solo" ? GENDERS : DOUBLE_GENDERS;
     for (const gender of genderSet) {
@@ -110,19 +100,16 @@ async function scrapeEvent(browser, baseUrl) {
         const url = `${baseUrl}${type === "Double" ? "-doubles" : ""}-${gender}?ag=${cat}`;
         try {
           console.log(`🔎 Visiting ${url}`);
-          await page.goto(url, { timeout: 60000, waitUntil: "domcontentloaded" });
+          await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
           await page.waitForSelector("table", { timeout: 8000 });
           const podium = await page.$$eval("table tbody tr", rows =>
             rows.slice(0, 3).map(r => {
               const c = r.querySelectorAll("td");
-              return {
-                name: c[1]?.innerText.trim() || "",
-                time: c[3]?.innerText.trim() || ""
-              };
+              return { name: c[1]?.innerText.trim() || "", time: c[3]?.innerText.trim() || "" };
             })
           );
           if (podium.length) {
-            const entry = {
+            results.push({
               key: `${baseUrl}_${cat}_${type}_${gender}`,
               eventName: `Ranking of ${year} ${city} HYROX ${type.toUpperCase()} ${gender.toUpperCase()}`,
               city,
@@ -132,11 +119,8 @@ async function scrapeEvent(browser, baseUrl) {
               type,
               podium,
               url
-            };
-            results.push(entry);
-            console.log(`✅ Added ${entry.eventName} (${cat})`);
-          } else {
-            console.log(`⚠️ No podium found for ${url}`);
+            });
+            console.log(`✅ Added ${city} ${type} ${gender} (${cat})`);
           }
         } catch (err) {
           console.log(`⚠️ Skipped ${url}: ${err.message}`);
@@ -144,25 +128,22 @@ async function scrapeEvent(browser, baseUrl) {
       }
     }
   }
-
   await page.close();
   return results;
 }
 
 /* -----------------------------------------------------------
-   🧠 Run full scrape
+   🧠 Run Full Scrape
 ----------------------------------------------------------- */
 async function runFullScrape() {
   await ensureChromiumInstalled();
   const slugs = await loadEventSlugs();
-  if (!slugs.length) {
-    console.log("⚠️ No valid event URLs — aborting.");
-    return [];
-  }
+  if (!slugs.length) return [];
 
-  console.log(`🌍 Loaded ${slugs.length} events from GitHub`);
-  const browser = await chromium.launch({ headless: true });
-  console.log("✅ Chromium launched successfully");
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-dev-shm-usage"]
+  });
 
   const all = [];
   for (const slug of slugs) {
@@ -177,26 +158,13 @@ async function runFullScrape() {
 }
 
 /* -----------------------------------------------------------
-   🌐 Express API Routes
+   🌐 Express API
 ----------------------------------------------------------- */
 app.get("/api/check-events", async (_req, res) => {
-  try {
-    const resTxt = await fetch(EVENTS_FILE_URL);
-    const text = await resTxt.text();
-    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    const valid = lines.filter(l => /^https:\/\/www\.hyresult\.com\/ranking\//.test(l));
-    const invalid = lines.filter(l => !/^https:\/\/www\.hyresult\.com\/ranking\//.test(l));
-    res.json({
-      source: EVENTS_FILE_URL,
-      total: lines.length,
-      valid: valid.length,
-      invalid: invalid.length,
-      validLines: valid,
-      invalidLines: invalid
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  const resTxt = await fetch(EVENTS_FILE_URL);
+  const text = await resTxt.text();
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  res.json({ total: lines.length, lines });
 });
 
 app.get("/api/scrape-all", async (_req, res) => {
@@ -204,25 +172,14 @@ app.get("/api/scrape-all", async (_req, res) => {
     const data = await runFullScrape();
     res.json({ added: data.length, totalCache: cache.length });
   } catch (err) {
-    console.error("❌ Scrape error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-app.get("/api/clear-cache", (_req, res) => {
-  cache = [];
-  res.json({ status: "✅ Cache cleared" });
-});
-
-app.get("/api/last-run", (_req, res) => res.json(cache));
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-/* -----------------------------------------------------------
-   🚀 Start server
------------------------------------------------------------ */
 app.listen(PORT, () => {
-  console.log(`🔥 HYROX Scraper v31.3 running on port ${PORT}`);
-  console.log("✅ Auto-installs Chromium if missing");
-  console.log("✅ Works persistently across redeploys");
-  console.log("✅ Diagnostic route available: /api/check-events");
+  console.log(`🔥 HYROX Scraper v31.4 running on port ${PORT}`);
+  console.log("✅ Non-root Playwright install");
+  console.log("✅ Compatible with Render sandbox");
 });
