@@ -1,11 +1,11 @@
 /**
- * HYROX Scraper v28.5 — Stable Render Edition
+ * HYROX Scraper v28.7 — Final Render Edition
  * --------------------------------------------
- * ✅ Crawls all past events from https://www.hyresult.com/events?tab=past
- * ✅ Supports SOLO + DOUBLES (Men, Women, Mixed)
- * ✅ Handles both S7 & S8 age groups
- * ✅ Writes persistent cache (/data/last-run.json)
- * ✅ Integrates with Google Sheets app script
+ * ✅ Discovers all /event/s* pages from https://www.hyresult.com/events?tab=past
+ * ✅ Derives SOLO + DOUBLES (Men, Women, Mixed)
+ * ✅ Crawls all Masters categories (45–79, +S7 50–59, 60–69)
+ * ✅ Writes persistent cache
+ * ✅ Works on Render Free Tier
  */
 
 import express from "express";
@@ -32,20 +32,10 @@ if (fs.existsSync(LAST_RUN_FILE)) {
 }
 
 /* -----------------------------------------------------------
-   🧠 Utilities
+   🕷️ Stage 1: Discover /event/ slugs from "past" page
 ----------------------------------------------------------- */
-function looksLikeTime(s) {
-  return /^\d{1,2}:\d{2}(:\d{2})?$/.test(s);
-}
-function looksLikeName(s) {
-  return /[A-Za-z]/.test(s) && !looksLikeTime(s) && !/^(\d+|DNF|DSQ)$/i.test(s);
-}
-
-// ──────────────────────────────────────────────
-// Discover past event slugs (Resilient v28.6)
-// ──────────────────────────────────────────────
-async function discoverPastSlugs() {
-  console.log("🌐 Discovering past events from /events?tab=past (resilient scan)...");
+async function discoverEventPages() {
+  console.log("🌐 Discovering event pages from /events?tab=past...");
   const browser = await chromium.launch({
     headless: true,
     args: ["--no-sandbox", "--disable-dev-shm-usage"],
@@ -54,67 +44,48 @@ async function discoverPastSlugs() {
 
   try {
     await page.goto("https://www.hyresult.com/events?tab=past", {
-      waitUntil: "domcontentloaded",
-      timeout: 180000,
+      waitUntil: "networkidle",
+      timeout: 120000,
     });
 
-    // Force client-side rendering by interacting
-    await page.waitForTimeout(4000);
-    await page.mouse.wheel(0, 3000);
-    await page.waitForTimeout(3000);
-
-    // Sometimes links load only after a scroll to bottom
+    // scroll until fully loaded (React lazy load)
     let prevHeight = 0;
-    for (let i = 0; i < 25; i++) {
+    while (true) {
       const currentHeight = await page.evaluate(() => {
-        window.scrollBy(0, 1000);
+        window.scrollBy(0, 1500);
         return document.body.scrollHeight;
       });
       if (currentHeight === prevHeight) break;
       prevHeight = currentHeight;
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(1800);
     }
 
-    // Try to detect event links, with retries
-    let retries = 0;
-    let slugs = [];
-    while (slugs.length === 0 && retries < 3) {
-      try {
-        await page.waitForSelector("a[href*='/ranking/']", { timeout: 60000 });
-        slugs = await page.$$eval("a[href*='/ranking/']", (links) => {
-          const results = new Set();
-          for (const a of links) {
-            const href = a.getAttribute("href");
-            if (!href) continue;
-            const match = href.match(/\/ranking\/(s\d{1,2}-\d{4}-[a-z-]+)-hyrox/i);
-            if (match) results.add(match[1]);
-          }
-          return Array.from(results);
-        });
-      } catch {
-        retries++;
-        console.log(`⚠️ Retry ${retries}/3 — waiting for event cards...`);
-        await page.waitForTimeout(5000);
+    // extract /event/s* slugs
+    const slugs = await page.$$eval("a[href*='/event/s']", (links) => {
+      const results = new Set();
+      for (const a of links) {
+        const href = a.getAttribute("href");
+        if (!href) continue;
+        const match = href.match(/\/event\/(s\d{1,2}-\d{4}-[a-z-]+-hyrox)/i);
+        if (match) results.add(match[1]);
       }
-    }
+      return Array.from(results);
+    });
 
-    if (!slugs.length) console.warn("⚠️ Still no slugs found after retries.");
-    else console.log(`🌍 Found ${slugs.length} event slugs.`);
-
+    console.log(`🌍 Found ${slugs.length} /event/ pages.`);
     await browser.close();
     return slugs;
   } catch (err) {
-    console.error(`❌ Slug discovery failed: ${err.message}`);
+    console.error(`❌ Event discovery failed: ${err.message}`);
     await browser.close();
     return [];
   }
 }
 
 /* -----------------------------------------------------------
-   🕸️ Crawl Each Event (Solo + Double)
+   🕸️ Stage 2: Crawl ranking results per event
 ----------------------------------------------------------- */
 async function scrapeEvent(url) {
-  console.log(`🔎 ${url}`);
   const browser = await chromium.launch({
     headless: true,
     args: ["--no-sandbox", "--disable-dev-shm-usage"],
@@ -123,7 +94,7 @@ async function scrapeEvent(url) {
 
   try {
     await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(1000);
 
     const rows = await page.$$eval("table tbody tr", (trs) =>
       trs.slice(0, 3).map((tr) => {
@@ -149,13 +120,13 @@ async function scrapeEvent(url) {
    ⚙️ Full Crawl Routine
 ----------------------------------------------------------- */
 async function runFullScrape() {
-  const slugs = await discoverPastSlugs();
+  const slugs = await discoverEventPages();
   if (!slugs.length) {
-    console.warn("⚠️ No slugs discovered — aborting.");
+    console.warn("⚠️ No event pages discovered — aborting.");
     return [];
   }
 
-  const masterAgeGroups = [
+  const masterAG = [
     "45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79",
     "50-59", "60-69", // S7 legacy
   ];
@@ -170,14 +141,13 @@ async function runFullScrape() {
   for (const slug of slugs) {
     for (const { type, genders } of categories) {
       for (const gender of genders) {
-        for (const ag of masterAgeGroups) {
-          const url = `https://www.hyresult.com/ranking/${slug}-hyrox${type === "doubles" ? "-doubles" : ""
-            }-${gender}?ag=${ag}`;
+        for (const ag of masterAG) {
+          const url = `https://www.hyresult.com/ranking/${slug.replace("-hyrox", "")}-hyrox${type === "doubles" ? "-doubles" : ""}-${gender}?ag=${ag}`;
 
           const rows = await scrapeEvent(url);
           if (!rows || !rows.length) continue;
 
-          const cityMatch = slug.match(/\d{4}-(.*)$/);
+          const cityMatch = slug.match(/\d{4}-(.*)-hyrox/i);
           const city = cityMatch ? cityMatch[1].replace(/-/g, " ").toUpperCase() : "UNKNOWN";
           const yearMatch = slug.match(/s\d{1,2}-(\d{4})/);
           const year = yearMatch ? yearMatch[1] : "2025";
@@ -219,7 +189,7 @@ async function runFullScrape() {
    🌐 API Endpoints
 ----------------------------------------------------------- */
 app.get("/", (_req, res) =>
-  res.send("✅ HYROX Scraper v28.5 — All past events via deep DOM crawler")
+  res.send("✅ HYROX Scraper v28.7 — Crawls /event/s* pages from past events")
 );
 
 app.get("/api/scrape-all", async (_req, res) => {
@@ -247,5 +217,5 @@ app.get("/api/clear-cache", (_req, res) => {
    🚀 Start server
 ----------------------------------------------------------- */
 app.listen(PORT, () =>
-  console.log(`🔥 HYROX Scraper v28.5 running on port ${PORT}`)
+  console.log(`🔥 HYROX Scraper v28.7 running on port ${PORT}`)
 );
