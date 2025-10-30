@@ -1,217 +1,235 @@
 /**
- * HYROX Scraper v28.2 — Render-Safe Full Recrawl Edition
- * -------------------------------------------------------
- * ✅ Auto-discovers all past events from /events?tab=past
- * ✅ Crawls Solo + Doubles (Men / Women / Mixed)
- * ✅ Masters + legacy S7 age groups
- * ✅ Auto-installs Chromium (no sudo)
- * ✅ 100 % compatible with Google Sheets v28 integration
+ * HYROX Scraper v28.5 — Stable Render Edition
+ * --------------------------------------------
+ * ✅ Crawls all past events from https://www.hyresult.com/events?tab=past
+ * ✅ Supports SOLO + DOUBLES (Men, Women, Mixed)
+ * ✅ Handles both S7 & S8 age groups
+ * ✅ Writes persistent cache (/data/last-run.json)
+ * ✅ Integrates with Google Sheets app script
  */
 
 import express from "express";
+import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";
-import { chromium } from "playwright";
-import { execSync } from "child_process";
 
 const app = express();
 const PORT = process.env.PORT || 1000;
 
-// ──────────────────────────────────────────────
-// Cache setup
-// ──────────────────────────────────────────────
+/* -----------------------------------------------------------
+   💾 Cache Setup
+----------------------------------------------------------- */
 const DATA_DIR = path.join(process.cwd(), "data");
 const LAST_RUN_FILE = path.join(DATA_DIR, "last-run.json");
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 let cache = { events: [] };
 if (fs.existsSync(LAST_RUN_FILE)) {
-  try {
-    cache = JSON.parse(fs.readFileSync(LAST_RUN_FILE, "utf8"));
-    console.log(`✅ Loaded ${cache.events.length} cached events.`);
-  } catch {
-    console.warn("⚠️ Corrupt cache — starting fresh.");
-  }
+  cache = JSON.parse(fs.readFileSync(LAST_RUN_FILE, "utf8"));
+  console.log(`✅ Loaded ${cache.events.length} cached events.`);
 } else {
   console.log("ℹ️ No cache found — starting fresh.");
 }
 
-app.use(express.json({ limit: "10mb" }));
-
-// ──────────────────────────────────────────────
-// Ensure Chromium (Render-safe, user-space only)
-// ──────────────────────────────────────────────
-try {
-  const PW_DIR = process.env.PLAYWRIGHT_BROWSERS_PATH || "/opt/render/project/.playwright";
-  const chromiumPath = path.join(PW_DIR, "chromium");
-  if (!fs.existsSync(chromiumPath)) {
-    console.log("🧩 Installing user-space Chromium...");
-    execSync("PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/.playwright npx playwright install chromium", { stdio: "inherit" });
-    console.log("✅ Chromium installed in user space.");
-  } else {
-    console.log("✅ Chromium already installed.");
-  }
-} catch (err) {
-  console.warn("⚠️ Chromium install skipped:", err.message);
+/* -----------------------------------------------------------
+   🧠 Utilities
+----------------------------------------------------------- */
+function looksLikeTime(s) {
+  return /^\d{1,2}:\d{2}(:\d{2})?$/.test(s);
+}
+function looksLikeName(s) {
+  return /[A-Za-z]/.test(s) && !looksLikeTime(s) && !/^(\d+|DNF|DSQ)$/i.test(s);
 }
 
-// ──────────────────────────────────────────────
-// Constants & helpers
-// ──────────────────────────────────────────────
-const MASTER_AGS_S8 = ["45-49","50-54","55-59","60-64","65-69","70-74","75-79"];
-const MASTER_AGS_S7 = ["50-59","60-69"];
-
-const normalize = s => (s || "").replace(/\s+/g, " ").trim();
-const looksLikeTime = s => /^\d{1,2}:\d{2}(:\d{2})?$/.test(s);
-
-function yearFromSlug(slug){ return slug.match(/s\d{1,2}-(\d{4})-/i)?.[1] || "2025"; }
-function cityFromSlug(slug){ return slug.match(/s\d{1,2}-\d{4}-([a-z-]+)-hyrox/i)?.[1].replace(/-/g," ").toUpperCase() || "UNKNOWN"; }
-
-function saveCache(){ fs.writeFileSync(LAST_RUN_FILE, JSON.stringify(cache,null,2)); }
-function addUnique(event){
-  const key=`${event.eventName}_${event.category}_${event.type}`;
-  if(cache.events.some(e=>`${e.eventName}_${e.category}_${e.type}`===key)) return false;
-  cache.events.push(event); saveCache(); return true;
-}
-
-// ──────────────────────────────────────────────
-// URL builders
-// ──────────────────────────────────────────────
-function ageGroupsFor(slug){ return /^s7-/.test(slug)?[...MASTER_AGS_S8,...MASTER_AGS_S7]:MASTER_AGS_S8; }
-
-function baseUrlsFor(slug){
-  return [
-    {url:`https://www.hyresult.com/ranking/${slug}-men`,type:"Solo",gender:"Men"},
-    {url:`https://www.hyresult.com/ranking/${slug}-women`,type:"Solo",gender:"Women"},
-    {url:`https://www.hyresult.com/ranking/${slug}-doubles-men`,type:"Double",gender:"Men"},
-    {url:`https://www.hyresult.com/ranking/${slug}-doubles-women`,type:"Double",gender:"Women"},
-    {url:`https://www.hyresult.com/ranking/${slug}-doubles-mixed`,type:"Double",gender:"Mixed"}
-  ];
-}
-
-function buildUrls(slugs){
-  const out=[];
-  for(const slug of slugs){
-    const ags=ageGroupsFor(slug);
-    for(const base of baseUrlsFor(slug)){
-      for(const ag of ags){
-        out.push({...base,slug,ag,url:`${base.url}?ag=${encodeURIComponent(ag)}`});
-      }
-    }
-  }
-  return out;
-}
-
-// ──────────────────────────────────────────────
-// Scrape podium
-// ──────────────────────────────────────────────
-async function scrapePodium(url,{type}){
-  const browser=await chromium.launch({headless:true,args:["--no-sandbox","--disable-dev-shm-usage"]});
-  const page=await browser.newPage();
-  try{
-    await page.goto(url,{waitUntil:"networkidle",timeout:60000});
-    await page.waitForTimeout(800);
-    const rows=await page.$$eval("table tbody tr",trs=>{
-      const looksLikeTime=t=>/^\d{1,2}:\d{2}(:\d{2})?$/.test(t);
-      const isNameish=t=>/[A-Za-zÀ-ÿ]/.test(t)&&!looksLikeTime(t)&&!/^\d+$/.test(t);
-      return trs.slice(0,3).map(tr=>{
-        const tds=[...tr.querySelectorAll("td")].map(td=>td.innerText.trim());
-        const names=tds.filter(isNameish);
-        const name=names.slice(0,2).join(", ");
-        const time=tds.find(looksLikeTime)||"";
-        return{name,time};
-      }).filter(r=>r.name&&r.time);
-    });
-    await browser.close();
-    return rows.length?rows:null;
-  }catch(e){await browser.close();console.error(`❌ ${url}: ${e.message}`);return null;}
-}
-
-// ──────────────────────────────────────────────
-// Discover past event slugs directly from API
-// ──────────────────────────────────────────────
+/* -----------------------------------------------------------
+   🕷️ Discover All Past Event Slugs (deep DOM version)
+----------------------------------------------------------- */
 async function discoverPastSlugs() {
-  console.log("🌐 Discovering past events via Hyresult API...");
+  console.log("🌐 Discovering past events from /events?tab=past (deep DOM scan)...");
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-dev-shm-usage"],
+  });
+  const page = await browser.newPage();
+
   try {
-    const res = await fetch("https://www.hyresult.com/api/events?tab=past");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const slugs = data
-      .map(e => e.slug)
-      .filter(slug => /^s\d{1,2}-\d{4}-[a-z-]+-hyrox$/.test(slug))
-      .map(slug => slug.replace(/-hyrox$/, ""));
-    console.log(`🌍 Found ${slugs.length} event slugs`);
-    return [...new Set(slugs)];
+    await page.goto("https://www.hyresult.com/events?tab=past", {
+      waitUntil: "networkidle",
+      timeout: 120000,
+    });
+
+    await page.waitForSelector("a[href*='/ranking/']", { timeout: 60000 });
+
+    // Scroll until all lazy-loaded events are visible
+    let prevHeight = 0;
+    while (true) {
+      const currentHeight = await page.evaluate(() => {
+        window.scrollBy(0, 1500);
+        return document.body.scrollHeight;
+      });
+      if (currentHeight === prevHeight) break;
+      prevHeight = currentHeight;
+      await page.waitForTimeout(1800);
+    }
+
+    // Extract unique event slugs
+    const slugs = await page.$$eval("a[href*='/ranking/']", (links) => {
+      const results = new Set();
+      for (const a of links) {
+        const href = a.getAttribute("href");
+        if (!href) continue;
+        const m = href.match(/\/ranking\/(s\d{1,2}-\d{4}-[a-z-]+)-hyrox/i);
+        if (m) results.add(m[1]);
+      }
+      return Array.from(results);
+    });
+
+    console.log(`🌍 Found ${slugs.length} event slugs.`);
+    await browser.close();
+    return slugs;
   } catch (err) {
-    console.error("❌ Slug discovery failed:", err.message);
+    console.error(`❌ Slug discovery failed: ${err.message}`);
+    await browser.close();
     return [];
   }
 }
 
-// ──────────────────────────────────────────────
-// Crawl batch
-// ──────────────────────────────────────────────
-async function scrapeBatch(defs){
-  let added=0;
-  for(const d of defs){
-    const{url,slug,type,gender,ag}=d;
-    console.log(`🔎 ${url}`);
-    const podium=await scrapePodium(url,{type});
-    if(!podium) continue;
-    const city=cityFromSlug(slug);
-    const year=yearFromSlug(slug);
-    const eventName=`Ranking of ${year} ${city} HYROX ${type.toUpperCase()} ${gender.toUpperCase()}`;
-    const event={eventName,city,year,category:ag,gender,type,podium,url};
-    if(addUnique(event)){added++;console.log(`✅ Added ${eventName} (${ag})`);}
-    else console.log(`⏩ Skipped cached ${eventName} (${ag})`);
-    await new Promise(r=>setTimeout(r,200));
+/* -----------------------------------------------------------
+   🕸️ Crawl Each Event (Solo + Double)
+----------------------------------------------------------- */
+async function scrapeEvent(url) {
+  console.log(`🔎 ${url}`);
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-dev-shm-usage"],
+  });
+  const page = await browser.newPage();
+
+  try {
+    await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
+    await page.waitForTimeout(1500);
+
+    const rows = await page.$$eval("table tbody tr", (trs) =>
+      trs.slice(0, 3).map((tr) => {
+        const tds = [...tr.querySelectorAll("td")].map((td) =>
+          td.innerText.trim()
+        );
+        const name = tds.find((t) => /[A-Za-z]/.test(t) && t.length > 2) || "";
+        const time = tds.find((t) => /^\d{1,2}:\d{2}(:\d{2})?$/.test(t)) || "";
+        return { name, time };
+      })
+    );
+
+    await browser.close();
+    return rows;
+  } catch (err) {
+    console.error(`❌ Failed ${url}: ${err.message}`);
+    await browser.close();
+    return null;
   }
-  console.log(`🎯 Completed scrape — ${added} new events.`);
-  return added;
 }
 
-// ──────────────────────────────────────────────
-// Routes
-// ──────────────────────────────────────────────
-app.get("/",(_req,res)=>res.send("✅ HYROX Scraper v28.2 — Render Stable"));
-app.get("/api/health",(_req,res)=>res.json({ok:true}));
+/* -----------------------------------------------------------
+   ⚙️ Full Crawl Routine
+----------------------------------------------------------- */
+async function runFullScrape() {
+  const slugs = await discoverPastSlugs();
+  if (!slugs.length) {
+    console.warn("⚠️ No slugs discovered — aborting.");
+    return [];
+  }
 
-app.get("/api/last-run",(_req,res)=>{
-  if(!fs.existsSync(LAST_RUN_FILE)) return res.status(404).json({error:"No cache"});
+  const masterAgeGroups = [
+    "45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79",
+    "50-59", "60-69", // S7 legacy
+  ];
+
+  const categories = [
+    { type: "solo", genders: ["men", "women"] },
+    { type: "doubles", genders: ["men", "women", "mixed"] },
+  ];
+
+  const newEvents = [];
+
+  for (const slug of slugs) {
+    for (const { type, genders } of categories) {
+      for (const gender of genders) {
+        for (const ag of masterAgeGroups) {
+          const url = `https://www.hyresult.com/ranking/${slug}-hyrox${type === "doubles" ? "-doubles" : ""
+            }-${gender}?ag=${ag}`;
+
+          const rows = await scrapeEvent(url);
+          if (!rows || !rows.length) continue;
+
+          const cityMatch = slug.match(/\d{4}-(.*)$/);
+          const city = cityMatch ? cityMatch[1].replace(/-/g, " ").toUpperCase() : "UNKNOWN";
+          const yearMatch = slug.match(/s\d{1,2}-(\d{4})/);
+          const year = yearMatch ? yearMatch[1] : "2025";
+          const eventName = `Ranking of ${year} ${city} HYROX ${type.toUpperCase()} ${gender.toUpperCase()}`;
+          const category = ag;
+          const key = `${slug}_${category}_${type}_${gender}`;
+
+          if (cache.events.some((e) => e.key === key)) {
+            console.log(`⏩ Skipped cached ${key}`);
+            continue;
+          }
+
+          const event = {
+            key,
+            eventName,
+            city,
+            year,
+            category,
+            gender,
+            type: type === "doubles" ? "Double" : "Solo",
+            podium: rows,
+            url,
+          };
+
+          cache.events.push(event);
+          newEvents.push(event);
+          fs.writeFileSync(LAST_RUN_FILE, JSON.stringify(cache, null, 2));
+          console.log(`✅ Added ${eventName} (${category})`);
+        }
+      }
+    }
+  }
+
+  console.log(`🎯 Completed scrape — ${newEvents.length} new events.`);
+  return newEvents;
+}
+
+/* -----------------------------------------------------------
+   🌐 API Endpoints
+----------------------------------------------------------- */
+app.get("/", (_req, res) =>
+  res.send("✅ HYROX Scraper v28.5 — All past events via deep DOM crawler")
+);
+
+app.get("/api/scrape-all", async (_req, res) => {
+  try {
+    const results = await runFullScrape();
+    res.json({ added: results.length, totalCache: cache.events.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/last-run", (_req, res) => {
+  if (!fs.existsSync(LAST_RUN_FILE))
+    return res.status(404).json({ error: "No cache found" });
   res.sendFile(LAST_RUN_FILE);
 });
 
-app.get("/api/clear-cache",(_req,res)=>{
-  if(fs.existsSync(LAST_RUN_FILE)) fs.unlinkSync(LAST_RUN_FILE);
-  cache={events:[]}; res.json({status:"cleared"});
+app.get("/api/clear-cache", (_req, res) => {
+  if (fs.existsSync(LAST_RUN_FILE)) fs.unlinkSync(LAST_RUN_FILE);
+  cache = { events: [] };
+  res.json({ status: "Cache cleared" });
 });
 
-app.post("/api/set-initial-cache",(req,res)=>{
-  const{events}=req.body;
-  if(!Array.isArray(events)) return res.status(400).json({error:"Invalid payload"});
-  cache.events=events; saveCache();
-  res.json({status:"✅ Cache restored",count:events.length});
-});
-
-app.get("/api/scrape-all",async(_req,res)=>{
-  try{
-    const slugs=await discoverPastSlugs();
-    const defs=buildUrls(slugs);
-    const added=await scrapeBatch(defs);
-    res.json({added,totalCache:cache.events.length});
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
-app.get("/api/scrape-latest",async(_req,res)=>{
-  try{
-    const slugs=await discoverPastSlugs();
-    const latest=slugs.slice(-2);
-    console.log("🆕 Latest slugs:",latest);
-    const defs=buildUrls(latest);
-    const added=await scrapeBatch(defs);
-    res.json({added,totalCache:cache.events.length});
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
-// ──────────────────────────────────────────────
-app.listen(PORT,()=>console.log(`🔥 HYROX Scraper v28.2 running on port ${PORT}`));
+/* -----------------------------------------------------------
+   🚀 Start server
+----------------------------------------------------------- */
+app.listen(PORT, () =>
+  console.log(`🔥 HYROX Scraper v28.5 running on port ${PORT}`)
+);
