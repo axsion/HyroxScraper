@@ -1,5 +1,5 @@
-https://www.hyresult.com/event/s8-2025-birmingham
-https://www.hyresult.com/event/s8-2025-paris
+https://www.hyresult.com/rankinga/s8-2025-birmingham
+https://www.hyresult.com/ranking/s8-2025-paris
 https://www.hyresult.com/ranking/s8-2025-valencia																									
 https://www.hyresult.com/ranking/s8-2025-gdansk																									
 https://www.hyresult.com/ranking/s8-2025-geneva																									
@@ -28,4 +28,4 @@ https://www.hyresult.com/ranking/s7-2025-riga
 https://www.hyresult.com/ranking/s7-2025-bangkok																									
 https://www.hyresult.com/ranking/s7-2025-berlin																									
 https://www.hyresult.com/ranking/s7-2025-incheon																									
-https://www.hyresult.com/ranking/s7-2025-heerenveen
+https://www.hyresult.com/ranking/s7-2025-heerenveen						
