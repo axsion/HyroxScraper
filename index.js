@@ -1,251 +1,187 @@
 /**
- * HYROX Scraper v30.2 — GitHub events.txt + Render Self-Healing Edition
- * ---------------------------------------------------------------------
- * ✅ Auto-installs Chromium if missing (Render-safe)
- * ✅ Reads event URLs dynamically from a GitHub events.txt file
- * ✅ Crawls SOLO + DOUBLES (Men/Women/Mixed) for Masters categories
- * ✅ Persists cache in /data/last-run.json
- * ✅ Fully compatible with your Google Sheets integration
+ * HYROX Scraper v30.3
+ * - Reads events list dynamically from GitHub events.txt
+ * - Crawls HYROX podiums for all master categories (45-49 → 75-79 + legacy)
+ * - Includes a new diagnostic endpoint: /api/check-events
  */
 
 import express from "express";
-import { chromium } from "playwright";
 import fetch from "node-fetch";
-import { execSync } from "child_process";
+import playwright from "playwright";
 import fs from "fs";
-import path from "path";
 
-/* -----------------------------------------------------------
-   🧱 Ensure Chromium Runtime (Render-safe)
------------------------------------------------------------ */
-try {
-  const PLAYWRIGHT_DIR = "/opt/render/project/.playwright";
-  if (!fs.existsSync(`${PLAYWRIGHT_DIR}/chromium`)) {
-    console.log("🧩 Installing Chromium runtime (Render-safe)...");
-    execSync("npx playwright install chromium", { stdio: "inherit" });
-  } else {
-    console.log("✅ Chromium already installed.");
-  }
-} catch (err) {
-  console.warn("⚠️ Skipping Chromium install:", err.message);
-}
-
-/* -----------------------------------------------------------
-   ⚙️ App Setup
------------------------------------------------------------ */
 const app = express();
-const PORT = process.env.PORT || 1000;
 app.use(express.json({ limit: "10mb" }));
 
-/* -----------------------------------------------------------
-   💾 Cache Setup
------------------------------------------------------------ */
-const DATA_DIR = path.join(process.cwd(), "data");
-const CACHE_FILE = path.join(DATA_DIR, "last-run.json");
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+// === CONFIGURATION ===
+const PORT = process.env.PORT || 1000;
+const EVENTS_FILE_URL =
+  "https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt";
 
-let cache = { events: [] };
-if (fs.existsSync(CACHE_FILE)) {
+const MASTER_CATEGORIES = [
+  "45-49",
+  "50-54",
+  "55-59",
+  "60-64",
+  "65-69",
+  "70-74",
+  "75-79",
+  "50-59",
+  "60-69", // legacy S7
+];
+
+const GENDERS = ["men", "women"];
+const DOUBLE_GENDERS = ["men", "women", "mixed"];
+const TYPES = ["Solo", "Double"];
+
+let cache = [];
+
+// === HELPER: Fetch event slugs from GitHub ===
+async function loadEventSlugs() {
   try {
-    cache = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
-    console.log(`✅ Loaded ${cache.events.length} cached events`);
-  } catch {
-    cache = { events: [] };
-  }
-}
-
-/* -----------------------------------------------------------
-   🌍 Load event URLs from GitHub
------------------------------------------------------------ */
-const EVENTS_TXT_URL =
-  "https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt"; // ⬅️ replace with your real path
-
-async function fetchEventList() {
-  try {
-    const res = await fetch(EVENTS_TXT_URL);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const res = await fetch(EVENTS_FILE_URL);
+    if (!res.ok) throw new Error(`Failed to load events.txt: ${res.statusText}`);
     const text = await res.text();
-    const urls = text
+    const lines = text
       .split(/\r?\n/)
-      .map(l => l.trim())
-      .filter(l => l && !l.startsWith("#"));
-    const slugs = urls
-      .map(u => {
-        const match = u.match(/(s\d{1,2}-\d{4}-[a-z-]+-hyrox)/i);
-        return match ? match[1] : null;
-      })
-      .filter(Boolean);
-    console.log(`📄 Loaded ${slugs.length} event slugs from GitHub`);
-    return slugs;
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+
+    const valid = lines.filter((l) => /^https:\/\/www\.hyresult\.com\/ranking\//.test(l));
+    const invalid = lines.filter((l) => !/^https:\/\/www\.hyresult\.com\/ranking\//.test(l));
+
+    console.log(`📄 Found ${valid.length} valid URLs, ${invalid.length} invalid`);
+    if (invalid.length > 0) console.log("⚠️ Invalid lines:\n", invalid.join("\n"));
+
+    return valid;
   } catch (err) {
-    console.error(`⚠️ Could not fetch events.txt: ${err.message}`);
+    console.error("❌ Error fetching events.txt:", err.message);
     return [];
   }
 }
 
-/* -----------------------------------------------------------
-   🎯 Constants
------------------------------------------------------------ */
-const MASTER_AGS = [
-  "45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79",
-  "50-59", "60-69"
-];
-const CATEGORIES = [
-  { type: "solo", genders: ["men", "women"] },
-  { type: "doubles", genders: ["men", "women", "mixed"] },
-];
+// === HELPER: Scrape one event ===
+async function scrapeEvent(browser, baseUrl) {
+  const results = [];
+  const city = baseUrl.split("/").pop().replace("s8-2025-", "").replace("s7-2025-", "").toUpperCase();
+  const yearMatch = baseUrl.match(/s(\d+)-(\d{4})/);
+  const year = yearMatch ? yearMatch[2] : "2025";
 
-/* -----------------------------------------------------------
-   🧠 Helpers
------------------------------------------------------------ */
-function makeRankingURL(slug, type, gender, ag) {
-  const base = slug.replace(/-hyrox$/, "");
-  const tail =
-    type === "doubles"
-      ? `-hyrox-doubles-${gender}`
-      : `-hyrox-${gender}`;
-  return `https://www.hyresult.com/ranking/${base}-${tail}?ag=${ag}`;
-}
-
-function deriveMetaFromSlug(slug, type, gender, ag) {
-  const cityMatch = slug.match(/\d{4}-(.*)-hyrox/i);
-  const city = cityMatch ? cityMatch[1].replace(/-/g, " ").toUpperCase() : "UNKNOWN";
-  const yearMatch = slug.match(/s\d{1,2}-(\d{4})/i);
-  const year = yearMatch ? yearMatch[1] : "2025";
-  const typeLabel = type === "doubles" ? "DOUBLE" : "SOLO";
-  const genderLabel = gender.toUpperCase();
-
-  return {
-    key: `${slug}_${ag}_${type}_${gender}`,
-    eventName: `Ranking of ${year} ${city} HYROX ${typeLabel} ${genderLabel}`,
-    city,
-    year,
-    category: ag,
-    gender: genderLabel === "MIXED" ? "Mixed" : genderLabel === "MEN" ? "Men" : "Women",
-    type: type === "doubles" ? "Double" : "Solo",
-  };
-}
-
-/* -----------------------------------------------------------
-   🕷️ Scrape Podium
------------------------------------------------------------ */
-async function scrapePodium(url) {
-  console.log(`🔎 ${url}`);
-  const browser = await chromium.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-dev-shm-usage"]
-  });
   const page = await browser.newPage();
+  for (const type of TYPES) {
+    const genderSet = type === "Solo" ? GENDERS : DOUBLE_GENDERS;
+    for (const gender of genderSet) {
+      for (const cat of MASTER_CATEGORIES) {
+        const url = `${baseUrl}${type === "Double" ? "-doubles" : ""}-${gender}?ag=${cat}`;
+        try {
+          console.log(`🔎 ${url}`);
+          await page.goto(url, { timeout: 60000, waitUntil: "domcontentloaded" });
+          await page.waitForSelector("table", { timeout: 8000 });
 
-  try {
-    await page.goto(url, { waitUntil: "networkidle", timeout: 70000 });
-    await page.waitForTimeout(1500);
-    const rows = await page.$$eval("table tbody tr", trs =>
-      trs.slice(0, 3).map(tr => {
-        const tds = Array.from(tr.querySelectorAll("td")).map(td => td.innerText.trim());
-        const name = tds.find(t => /[A-Za-z]/.test(t)) || "";
-        const time = tds.find(t => /^\d{1,2}:\d{2}(:\d{2})?$/.test(t)) || "";
-        return { name, time };
-      })
-    );
-    await browser.close();
-    if (!rows.length || !rows[0].time) {
-      console.warn(`⚠️ No podium found for ${url}`);
-      return null;
-    }
-    return rows;
-  } catch (err) {
-    console.error(`❌ Failed ${url}: ${err.message}`);
-    await browser.close();
-    return null;
-  }
-}
+          const podium = await page.$$eval("table tbody tr", (rows) =>
+            rows.slice(0, 3).map((r) => {
+              const cells = r.querySelectorAll("td");
+              return {
+                name: cells[1]?.innerText.trim(),
+                time: cells[3]?.innerText.trim(),
+              };
+            })
+          );
 
-/* -----------------------------------------------------------
-   🚀 Crawl Engine
------------------------------------------------------------ */
-async function crawlFromSlugs(slugs) {
-  const added = [];
-
-  for (const slug of slugs) {
-    for (const { type, genders } of CATEGORIES) {
-      for (const gender of genders) {
-        for (const ag of MASTER_AGS) {
-          const url = makeRankingURL(slug, type, gender, ag);
-          const meta = deriveMetaFromSlug(slug, type, gender, ag);
-
-          if (cache.events.some(e => e.key === meta.key)) continue;
-
-          const podium = await scrapePodium(url);
-          if (!podium) continue;
-
-          const event = { ...meta, podium, url };
-          cache.events.push(event);
-          added.push(event);
-          fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2));
-          console.log(`✅ Added ${meta.eventName} (${ag})`);
+          if (podium.length > 0) {
+            results.push({
+              key: `${baseUrl}_${cat}_${type}`,
+              eventName: `Ranking of ${year} ${city} HYROX ${type.toUpperCase()} ${gender.toUpperCase()}`,
+              city,
+              year,
+              category: cat,
+              gender: gender.charAt(0).toUpperCase() + gender.slice(1),
+              type,
+              podium,
+              url,
+            });
+            console.log(`✅ Added ${city} ${type} ${gender.toUpperCase()} (${cat})`);
+          }
+        } catch {
+          console.log(`⚠️ Skipped missing or invalid: ${url}`);
         }
       }
     }
   }
-
-  console.log(`🎯 Crawl complete — ${added.length} new events`);
-  return added;
+  await page.close();
+  return results;
 }
 
-/* -----------------------------------------------------------
-   🌐 API Endpoints
------------------------------------------------------------ */
-app.get("/", (_req, res) =>
-  res.send("✅ HYROX Scraper v30.2 — Render Self-Healing Edition")
-);
+// === MAIN SCRAPER ===
+async function runFullScrape() {
+  const slugs = await loadEventSlugs();
+  if (slugs.length === 0) {
+    console.log("⚠️ No valid event URLs — aborting.");
+    return [];
+  }
 
-app.get("/api/scrape-all", async (_req, res) => {
+  console.log(`🌍 Loaded ${slugs.length} event pages from GitHub`);
+  const browser = await playwright.chromium.launch({ headless: true });
+  const all = [];
+
+  for (const slug of slugs) {
+    const data = await scrapeEvent(browser, slug);
+    all.push(...data);
+  }
+
+  await browser.close();
+  cache = all;
+  console.log(`🎯 Crawl complete — ${cache.length} podiums added`);
+  return cache;
+}
+
+// === ROUTES ===
+
+// Full scrape
+app.get("/api/scrape-all", async (req, res) => {
+  const data = await runFullScrape();
+  res.json({ added: data.length, totalCache: cache.length });
+});
+
+// Last cached results
+app.get("/api/last-run", (req, res) => {
+  res.json(cache);
+});
+
+// Clear cache
+app.get("/api/clear-cache", (req, res) => {
+  cache = [];
+  res.json({ status: "✅ Cache cleared" });
+});
+
+// Diagnostic endpoint
+app.get("/api/check-events", async (req, res) => {
   try {
-    const slugs = await fetchEventList();
-    if (!slugs.length) return res.json({ added: 0, note: "No slugs found" });
-    const results = await crawlFromSlugs(slugs);
-    res.json({ added: results.length, totalCache: cache.events.length });
+    const resTxt = await fetch(EVENTS_FILE_URL);
+    const text = await resTxt.text();
+    const lines = text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+
+    const valid = lines.filter((l) => /^https:\/\/www\.hyresult\.com\/ranking\//.test(l));
+    const invalid = lines.filter((l) => !/^https:\/\/www\.hyresult\.com\/ranking\//.test(l));
+
+    res.json({
+      source: EVENTS_FILE_URL,
+      total: lines.length,
+      valid: valid.length,
+      invalid: invalid.length,
+      validLines: valid,
+      invalidLines: invalid,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.get("/api/scrape-weekend", async (_req, res) => {
-  try {
-    const slugs = await fetchEventList();
-    const recent = slugs.slice(-2);
-    const results = await crawlFromSlugs(recent);
-    res.json({ added: results.length, totalCache: cache.events.length });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/api/last-run", (_req, res) => {
-  if (!fs.existsSync(CACHE_FILE))
-    return res.status(404).json({ error: "No cache found" });
-  res.sendFile(CACHE_FILE);
-});
-
-app.get("/api/clear-cache", (_req, res) => {
-  if (fs.existsSync(CACHE_FILE)) fs.unlinkSync(CACHE_FILE);
-  cache = { events: [] };
-  res.json({ status: "Cache cleared" });
-});
-
-app.post("/api/set-initial-cache", (req, res) => {
-  const { events } = req.body;
-  if (!Array.isArray(events))
-    return res.status(400).json({ error: "Invalid payload" });
-  cache.events = events;
-  fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2));
-  res.json({ status: "✅ Cache restored", count: events.length });
-});
-
-/* -----------------------------------------------------------
-   🏁 Start Server
------------------------------------------------------------ */
+// === START SERVER ===
 app.listen(PORT, () => {
-  console.log(`🔥 HYROX Scraper v30.2 running on port ${PORT}`);
+  console.log(`🔥 HYROX Scraper v30.3 running on port ${PORT}`);
+  console.log("✅ Diagnostic route enabled: /api/check-events");
 });
