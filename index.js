@@ -1,17 +1,15 @@
 /**
- * HYROX Scraper v30.8 — Season-aware + Render-safe
+ * HYROX Scraper v31.0 — Render-safe final version
  * -------------------------------------------------
- * ✅ CommonJS (works with Node 25+)
- * ✅ Uses embedded Chromium from @playwright/browser-chromium
+ * ✅ Uses Playwright-core directly (no root install)
  * ✅ Reads events.txt dynamically from GitHub
  * ✅ Auto-detects S7 vs S8 age groups
+ * ✅ Works on Render (Node 25)
  */
 
 const express = require("express");
 const fetch = require("node-fetch");
-
-// ✅ Correct Playwright usage
-const { chromium } = require("@playwright/browser-chromium");
+const playwright = require("playwright-core"); // ✅ Safe and stable core package
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -43,14 +41,12 @@ async function loadEventSlugs() {
     if (!res.ok) throw new Error(`Failed to fetch events.txt (${res.status})`);
     const text = await res.text();
     const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-
     const valid = lines.filter(l =>
       /^https:\/\/www\.hyresult\.com\/ranking\//.test(l)
     );
     const invalid = lines.filter(l =>
       !/^https:\/\/www\.hyresult\.com\/ranking\//.test(l)
     );
-
     console.log(`📄 Found ${valid.length} valid URLs, ${invalid.length} invalid`);
     if (invalid.length) console.log("⚠️ Invalid lines:\n", invalid.join("\n"));
     return valid;
@@ -128,8 +124,8 @@ async function runFullScrape() {
   }
 
   console.log(`🌍 Loaded ${slugs.length} events from GitHub`);
-  const browser = await chromium.launch({ headless: true }); // ✅ Correct launcher
-  console.log("✅ Using embedded Chromium (no install step needed)");
+  const browser = await playwright.chromium.launch({ headless: true }); // ✅ Now stable
+  console.log("✅ Using Playwright-core embedded Chromium");
 
   const all = [];
   for (const slug of slugs) {
@@ -192,9 +188,9 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
    🚀 Start server
 ----------------------------------------------------------- */
 app.listen(PORT, () => {
-  console.log(`🔥 HYROX Scraper v30.8 running on port ${PORT}`);
+  console.log(`🔥 HYROX Scraper v31.0 running on port ${PORT}`);
   console.log("✅ CommonJS mode (Render-safe)");
-  console.log("✅ Embedded Chromium launcher");
+  console.log("✅ Using Playwright-core Chromium launcher");
   console.log("✅ Season-aware AG detection active (S7 vs S8)");
   console.log("✅ Diagnostic route: /api/check-events");
 });
