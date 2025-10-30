@@ -1,109 +1,123 @@
 /**
- * HYROX Scraper v28.7 — Final Render Edition
- * --------------------------------------------
- * ✅ Discovers all /event/s* pages from https://www.hyresult.com/events?tab=past
- * ✅ Derives SOLO + DOUBLES (Men, Women, Mixed)
- * ✅ Crawls all Masters categories (45–79, +S7 50–59, 60–69)
- * ✅ Writes persistent cache
- * ✅ Works on Render Free Tier
+ * HYROX Scraper v30.0 — GitHub events.txt driven
+ * -----------------------------------------------------------
+ * ✅ Fetches event URLs dynamically from a GitHub-hosted events.txt
+ * ✅ Crawls SOLO + DOUBLES (Men/Women/Mixed) for Masters age groups
+ * ✅ Compatible with your Google Sheets Apps Script integration
+ * ✅ Persistent cache stored locally (data/last-run.json)
+ *
+ * Weekly workflow:
+ *   1️⃣  Update your GitHub events.txt (add new event URLs)
+ *   2️⃣  Visit https://<your-render-app>.onrender.com/api/scrape-all
+ *   3️⃣  Run updateHyroxResults() in Google Sheets
  */
 
 import express from "express";
 import { chromium } from "playwright";
+import fetch from "node-fetch";
 import fs from "fs";
 import path from "path";
 
 const app = express();
 const PORT = process.env.PORT || 1000;
+app.use(express.json({ limit: "10mb" }));
 
 /* -----------------------------------------------------------
-   💾 Cache Setup
+   📁 Paths
 ----------------------------------------------------------- */
 const DATA_DIR = path.join(process.cwd(), "data");
-const LAST_RUN_FILE = path.join(DATA_DIR, "last-run.json");
+const CACHE_FILE = path.join(DATA_DIR, "last-run.json");
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
+/* -----------------------------------------------------------
+   💾 Cache
+----------------------------------------------------------- */
 let cache = { events: [] };
-if (fs.existsSync(LAST_RUN_FILE)) {
-  cache = JSON.parse(fs.readFileSync(LAST_RUN_FILE, "utf8"));
-  console.log(`✅ Loaded ${cache.events.length} cached events.`);
+if (fs.existsSync(CACHE_FILE)) {
+  try {
+    cache = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
+    if (!Array.isArray(cache.events)) cache.events = [];
+    console.log(`✅ Loaded ${cache.events.length} cached events`);
+  } catch {
+    cache = { events: [] };
+  }
 } else {
-  console.log("ℹ️ No cache found — starting fresh.");
+  console.log("ℹ️ No cache found — starting fresh");
 }
 
 /* -----------------------------------------------------------
-   🕷️ Stage 1: Discover /event/ slugs from "past" page
+   🌍 Load event URLs from GitHub events.txt
 ----------------------------------------------------------- */
-// ──────────────────────────────────────────────
-// Discover /event/ slugs reliably (v28.8)
-// ──────────────────────────────────────────────
-async function discoverEventPages() {
-  console.log("🌐 Discovering /event/ pages from https://www.hyresult.com/events?tab=past ...");
-  const browser = await chromium.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-dev-shm-usage"],
-  });
-  const page = await browser.newPage();
+const EVENTS_TXT_URL =
+  "https://raw.githubusercontent.com/<yourUser>/<yourRepo>/main/events.txt"; // 👈 replace with your own
 
+async function fetchEventList() {
   try {
-    await page.goto("https://www.hyresult.com/events?tab=past", {
-      waitUntil: "domcontentloaded",
-      timeout: 180000,
-    });
-
-    console.log("⏳ Waiting for event cards to render...");
-    await page.waitForTimeout(8000); // let React hydrate
-
-    // Try waiting explicitly for the event cards or anchor tags
-    try {
-      await page.waitForSelector("a[href*='/event/'], .MuiCard-root", { timeout: 90000 });
-    } catch {
-      console.warn("⚠️ Event cards not detected yet, continuing anyway...");
-    }
-
-    // Slowly scroll down to trigger lazy loading
-    let prevHeight = 0;
-    for (let i = 0; i < 40; i++) {
-      const newHeight = await page.evaluate(() => {
-        window.scrollBy(0, 1200);
-        return document.body.scrollHeight;
-      });
-      if (newHeight === prevHeight) break;
-      prevHeight = newHeight;
-      await page.waitForTimeout(1500);
-    }
-
-    // Give React a moment to finalize updates
-    await page.waitForTimeout(3000);
-
-    // Collect all hrefs, even if not visible
-    const slugs = await page.evaluate(() => {
-      const results = new Set();
-      document.querySelectorAll("a[href*='/event/']").forEach(a => {
-        const href = a.getAttribute("href");
-        if (href) {
-          const match = href.match(/\/event\/(s\d{1,2}-\d{4}-[a-z-]+-hyrox)/i);
-          if (match) results.add(match[1]);
-        }
-      });
-      return Array.from(results);
-    });
-
-    console.log(`🌍 Found ${slugs.length} event pages.`);
-    await browser.close();
+    const res = await fetch(EVENTS_TXT_URL);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    const urls = text
+      .split(/\r?\n/)
+      .map(l => l.trim())
+      .filter(l => l && !l.startsWith("#"));
+    const slugs = urls.map(u => {
+      const match = u.match(/(s\d{1,2}-\d{4}-[a-z-]+-hyrox)/i);
+      return match ? match[1] : null;
+    }).filter(Boolean);
+    console.log(`📄 Loaded ${slugs.length} event slugs from GitHub`);
     return slugs;
   } catch (err) {
-    console.error(`❌ Event discovery failed: ${err.message}`);
-    await browser.close();
+    console.error(`⚠️ Could not fetch events.txt: ${err.message}`);
     return [];
   }
 }
 
+/* -----------------------------------------------------------
+   🎯 Constants
+----------------------------------------------------------- */
+const MASTER_AGS = [
+  "45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79",
+  "50-59", "60-69"
+];
+
+const CATEGORIES = [
+  { type: "solo", genders: ["men", "women"] },
+  { type: "doubles", genders: ["men", "women", "mixed"] },
+];
 
 /* -----------------------------------------------------------
-   🕸️ Stage 2: Crawl ranking results per event
+   🧠 Helpers
 ----------------------------------------------------------- */
-async function scrapeEvent(url) {
+function makeRankingURL(slug, type, gender, ag) {
+  const base = slug.replace(/-hyrox$/, "");
+  const tail = type === "doubles" ? `-hyrox-doubles-${gender}` : `-hyrox-${gender}`;
+  return `https://www.hyresult.com/ranking/${base}-${tail}?ag=${ag}`;
+}
+
+function deriveMetaFromSlug(slug, type, gender, ag) {
+  const cityMatch = slug.match(/\d{4}-(.*)-hyrox/i);
+  const city = cityMatch ? cityMatch[1].replace(/-/g, " ").toUpperCase() : "UNKNOWN";
+  const yearMatch = slug.match(/s\d{1,2}-(\d{4})/i);
+  const year = yearMatch ? yearMatch[1] : "2025";
+  const typeLabel = type === "doubles" ? "DOUBLE" : "SOLO";
+  const genderLabel = gender.toUpperCase();
+
+  return {
+    key: `${slug}_${ag}_${type}_${gender}`,
+    eventName: `Ranking of ${year} ${city} HYROX ${typeLabel} ${genderLabel}`,
+    city,
+    year,
+    category: ag,
+    gender: genderLabel === "MIXED" ? "Mixed" : (genderLabel === "MEN" ? "Men" : "Women"),
+    type: type === "doubles" ? "Double" : "Solo",
+  };
+}
+
+/* -----------------------------------------------------------
+   🕷️ Scrape top 3 podium rows
+----------------------------------------------------------- */
+async function scrapePodium(url) {
+  console.log(`🔎 ${url}`);
   const browser = await chromium.launch({
     headless: true,
     args: ["--no-sandbox", "--disable-dev-shm-usage"],
@@ -111,21 +125,21 @@ async function scrapeEvent(url) {
   const page = await browser.newPage();
 
   try {
-    await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
-    await page.waitForTimeout(1000);
-
-    const rows = await page.$$eval("table tbody tr", (trs) =>
-      trs.slice(0, 3).map((tr) => {
-        const tds = [...tr.querySelectorAll("td")].map((td) =>
-          td.innerText.trim()
-        );
-        const name = tds.find((t) => /[A-Za-z]/.test(t) && t.length > 2) || "";
-        const time = tds.find((t) => /^\d{1,2}:\d{2}(:\d{2})?$/.test(t)) || "";
+    await page.goto(url, { waitUntil: "networkidle", timeout: 70000 });
+    await page.waitForTimeout(1200);
+    const rows = await page.$$eval("table tbody tr", trs =>
+      trs.slice(0, 3).map(tr => {
+        const tds = Array.from(tr.querySelectorAll("td")).map(td => td.innerText.trim());
+        const name = tds.find(t => /[A-Za-z]/.test(t)) || "";
+        const time = tds.find(t => /^\d{1,2}:\d{2}(:\d{2})?$/.test(t)) || "";
         return { name, time };
       })
     );
-
     await browser.close();
+    if (!rows.length || !rows[0].time) {
+      console.warn(`⚠️ No podium found at ${url}`);
+      return null;
+    }
     return rows;
   } catch (err) {
     console.error(`❌ Failed ${url}: ${err.message}`);
@@ -135,105 +149,87 @@ async function scrapeEvent(url) {
 }
 
 /* -----------------------------------------------------------
-   ⚙️ Full Crawl Routine
+   🚀 Crawl driver
 ----------------------------------------------------------- */
-async function runFullScrape() {
-  const slugs = await discoverEventPages();
-  if (!slugs.length) {
-    console.warn("⚠️ No event pages discovered — aborting.");
-    return [];
-  }
-
-  const masterAG = [
-    "45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79",
-    "50-59", "60-69", // S7 legacy
-  ];
-
-  const categories = [
-    { type: "solo", genders: ["men", "women"] },
-    { type: "doubles", genders: ["men", "women", "mixed"] },
-  ];
-
-  const newEvents = [];
+async function crawlFromSlugs(slugs) {
+  const added = [];
 
   for (const slug of slugs) {
-    for (const { type, genders } of categories) {
+    for (const { type, genders } of CATEGORIES) {
       for (const gender of genders) {
-        for (const ag of masterAG) {
-          const url = `https://www.hyresult.com/ranking/${slug.replace("-hyrox", "")}-hyrox${type === "doubles" ? "-doubles" : ""}-${gender}?ag=${ag}`;
+        for (const ag of MASTER_AGS) {
+          const url = makeRankingURL(slug, type, gender, ag);
+          const meta = deriveMetaFromSlug(slug, type, gender, ag);
 
-          const rows = await scrapeEvent(url);
-          if (!rows || !rows.length) continue;
+          if (cache.events.some(e => e.key === meta.key)) continue;
 
-          const cityMatch = slug.match(/\d{4}-(.*)-hyrox/i);
-          const city = cityMatch ? cityMatch[1].replace(/-/g, " ").toUpperCase() : "UNKNOWN";
-          const yearMatch = slug.match(/s\d{1,2}-(\d{4})/);
-          const year = yearMatch ? yearMatch[1] : "2025";
-          const eventName = `Ranking of ${year} ${city} HYROX ${type.toUpperCase()} ${gender.toUpperCase()}`;
-          const category = ag;
-          const key = `${slug}_${category}_${type}_${gender}`;
+          const podium = await scrapePodium(url);
+          if (!podium) continue;
 
-          if (cache.events.some((e) => e.key === key)) {
-            console.log(`⏩ Skipped cached ${key}`);
-            continue;
-          }
-
-          const event = {
-            key,
-            eventName,
-            city,
-            year,
-            category,
-            gender,
-            type: type === "doubles" ? "Double" : "Solo",
-            podium: rows,
-            url,
-          };
-
+          const event = { ...meta, podium, url };
           cache.events.push(event);
-          newEvents.push(event);
-          fs.writeFileSync(LAST_RUN_FILE, JSON.stringify(cache, null, 2));
-          console.log(`✅ Added ${eventName} (${category})`);
+          added.push(event);
+          fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2));
+          console.log(`✅ Added ${meta.eventName} (${ag})`);
         }
       }
     }
   }
 
-  console.log(`🎯 Completed scrape — ${newEvents.length} new events.`);
-  return newEvents;
+  console.log(`🎯 Crawl complete — ${added.length} new events`);
+  return added;
 }
 
 /* -----------------------------------------------------------
-   🌐 API Endpoints
+   🌐 API
 ----------------------------------------------------------- */
-app.get("/", (_req, res) =>
-  res.send("✅ HYROX Scraper v28.7 — Crawls /event/s* pages from past events")
-);
+app.get("/", (_req, res) => res.send("✅ HYROX Scraper v30.0 — GitHub events.txt driven"));
 
 app.get("/api/scrape-all", async (_req, res) => {
   try {
-    const results = await runFullScrape();
+    const slugs = await fetchEventList();
+    if (!slugs.length) return res.json({ added: 0, note: "No slugs from GitHub" });
+    const results = await crawlFromSlugs(slugs);
     res.json({ added: results.length, totalCache: cache.events.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
+app.get("/api/scrape-weekend", async (req, res) => {
+  try {
+    const n = Math.max(1, Math.min(8, Number(req.query.n) || 2));
+    const slugs = await fetchEventList();
+    const recent = slugs.slice(-n);
+    const results = await crawlFromSlugs(recent);
+    res.json({ added: results.length, targeted: recent });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/api/last-run", (_req, res) => {
-  if (!fs.existsSync(LAST_RUN_FILE))
-    return res.status(404).json({ error: "No cache found" });
-  res.sendFile(LAST_RUN_FILE);
+  if (!fs.existsSync(CACHE_FILE)) return res.status(404).json({ error: "No cache found" });
+  res.sendFile(CACHE_FILE);
 });
 
 app.get("/api/clear-cache", (_req, res) => {
-  if (fs.existsSync(LAST_RUN_FILE)) fs.unlinkSync(LAST_RUN_FILE);
+  if (fs.existsSync(CACHE_FILE)) fs.unlinkSync(CACHE_FILE);
   cache = { events: [] };
   res.json({ status: "Cache cleared" });
 });
 
+app.post("/api/set-initial-cache", (req, res) => {
+  const { events } = req.body || {};
+  if (!Array.isArray(events)) return res.status(400).json({ error: "Invalid payload" });
+  cache.events = events;
+  fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2));
+  res.json({ status: "✅ Cache restored", count: events.length });
+});
+
 /* -----------------------------------------------------------
-   🚀 Start server
+   🏁 Start
 ----------------------------------------------------------- */
-app.listen(PORT, () =>
-  console.log(`🔥 HYROX Scraper v28.7 running on port ${PORT}`)
-);
+app.listen(PORT, () => {
+  console.log(`🔥 HYROX Scraper v30.0 running on port ${PORT}`);
+});
