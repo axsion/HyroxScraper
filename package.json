@@ -1,7 +1,10 @@
 {
   "name": "hyrox-scraper",
-  "version": "33.0.0",
+  "version": "33.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node index.js"
   },
@@ -9,5 +12,8 @@
     "express": "^4.19.2",
     "playwright-chromium": "^1.47.2",
     "node-fetch": "^3.3.2"
+  },
+  "playwright": {
+    "browsers": ["chromium"]
   }
 }
