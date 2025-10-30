@@ -1,19 +1,16 @@
 {
   "name": "hyrox-scraper",
-  "version": "31.9.0",
+  "version": "32.0.0",
   "type": "module",
-  "main": "index.js",
+  "engines": {
+    "node": ">=18 <=22.12 || >=23"
+  },
   "scripts": {
-    "postinstall": "PLAYWRIGHT_BROWSERS_PATH=/opt/render/.cache/ms-playwright npx playwright install chromium",
-    "start": "PLAYWRIGHT_BROWSERS_PATH=/opt/render/.cache/ms-playwright node index.js"
+    "start": "PLAYWRIGHT_BROWSERS_PATH=/opt/render/.cache/ms-playwright node index.js",
+    "postinstall": "PLAYWRIGHT_BROWSERS_PATH=/opt/render/.cache/ms-playwright npx playwright install chromium"
   },
   "dependencies": {
     "express": "^4.19.2",
-    "node-fetch": "^3.3.2",
-    "playwright": "^1.47.2",
-    "fs-extra": "^11.2.0"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+    "playwright": "^1.47.2"
   }
 }
