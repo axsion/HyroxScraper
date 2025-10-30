@@ -128,28 +128,24 @@ async function scrapePodium(url,{type}){
 }
 
 // ──────────────────────────────────────────────
-// Discover slugs dynamically (Playwright)
+// Discover past event slugs directly from API
 // ──────────────────────────────────────────────
-async function discoverPastSlugs(){
-  console.log("🌐 Discovering past events dynamically...");
-  const browser=await chromium.launch({headless:true,args:["--no-sandbox","--disable-dev-shm-usage"]});
-  const page=await browser.newPage();
-  try{
-    await page.goto("https://www.hyresult.com/events?tab=past",{waitUntil:"networkidle",timeout:60000});
-    await page.waitForTimeout(3000);
-    const slugs=await page.$$eval("a[href*='/ranking/']",as=>
-      Array.from(new Set(
-        as.map(a=>a.getAttribute("href"))
-          .filter(h=>h&&h.includes("/ranking/"))
-          .map(h=>h.match(/\/ranking\/(s\d{1,2}-\d{4}-[a-z-]+)-hyrox/i))
-          .filter(Boolean)
-          .map(m=>m[1])
-      ))
-    );
-    await browser.close();
+async function discoverPastSlugs() {
+  console.log("🌐 Discovering past events via Hyresult API...");
+  try {
+    const res = await fetch("https://www.hyresult.com/api/events?tab=past");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const slugs = data
+      .map(e => e.slug)
+      .filter(slug => /^s\d{1,2}-\d{4}-[a-z-]+-hyrox$/.test(slug))
+      .map(slug => slug.replace(/-hyrox$/, ""));
     console.log(`🌍 Found ${slugs.length} event slugs`);
-    return slugs;
-  }catch(e){await browser.close();console.error("❌ Slug discovery failed:",e.message);return[];}
+    return [...new Set(slugs)];
+  } catch (err) {
+    console.error("❌ Slug discovery failed:", err.message);
+    return [];
+  }
 }
 
 // ──────────────────────────────────────────────
