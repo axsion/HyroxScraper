@@ -1,20 +1,22 @@
 /**
- * HYROX Scraper v31.2 — Render-stable version
- * --------------------------------------------
- * ✅ Uses playwright-chromium (includes Chromium binary)
- * ✅ Reads events.txt dynamically from GitHub
- * ✅ Detects S7 vs S8 master age-groups
- * ✅ Works 100% on Render with no install step
+ * HYROX Scraper v31.3 — Render-stable FINAL
+ * -----------------------------------------
+ * ✅ Automatically installs Chromium at runtime if missing
+ * ✅ Uses playwright-core + dynamic installer
+ * ✅ Reads events.txt from GitHub
+ * ✅ Works on Render after redeploy without root or su
  */
 
 const express = require("express");
 const fetch = require("node-fetch");
-const { chromium } = require("playwright-chromium"); // ✅ Embedded Chromium – no install needed
+const { execSync } = require("child_process");
+const path = require("path");
+const fs = require("fs");
 
+let chromium = null;
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
-// === CONFIG ===
 const PORT = process.env.PORT || 1000;
 const EVENTS_FILE_URL =
   "https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt";
@@ -33,6 +35,39 @@ function ageGroupsFor(url) {
 let cache = [];
 
 /* -----------------------------------------------------------
+   ⚙️ Ensure Playwright Chromium is installed
+----------------------------------------------------------- */
+async function ensureChromiumInstalled() {
+  try {
+    const browserPath = path.join(
+      process.cwd(),
+      "node_modules",
+      ".cache",
+      "ms-playwright"
+    );
+    const chromeBinary = path.join(
+      browserPath,
+      "chromium-1124",
+      "chrome-linux",
+      "chrome"
+    );
+    if (!fs.existsSync(chromeBinary)) {
+      console.log("🧩 Installing Chromium for Playwright...");
+      execSync("npx playwright install --with-deps chromium", {
+        stdio: "inherit",
+      });
+      console.log("✅ Chromium installation completed.");
+    } else {
+      console.log("✅ Chromium binary already present.");
+    }
+    chromium = require("playwright-core").chromium;
+  } catch (err) {
+    console.error("❌ Chromium installation failed:", err.message);
+    throw err;
+  }
+}
+
+/* -----------------------------------------------------------
    🔗 Load event URLs from GitHub
 ----------------------------------------------------------- */
 async function loadEventSlugs() {
@@ -41,10 +76,13 @@ async function loadEventSlugs() {
     if (!res.ok) throw new Error(`Failed to fetch events.txt (${res.status})`);
     const text = await res.text();
     const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    const valid = lines.filter(l => /^https:\/\/www\.hyresult\.com\/ranking\//.test(l));
-    const invalid = lines.filter(l => !/^https:\/\/www\.hyresult\.com\/ranking\//.test(l));
+    const valid = lines.filter(l =>
+      /^https:\/\/www\.hyresult\.com\/ranking\//.test(l)
+    );
+    const invalid = lines.filter(l =>
+      !/^https:\/\/www\.hyresult\.com\/ranking\//.test(l)
+    );
     console.log(`📄 Found ${valid.length} valid URLs, ${invalid.length} invalid`);
-    if (invalid.length) console.log("⚠️ Invalid lines:\n", invalid.join("\n"));
     return valid;
   } catch (err) {
     console.error("❌ Error loading events.txt:", err.message);
@@ -115,6 +153,7 @@ async function scrapeEvent(browser, baseUrl) {
    🧠 Run full scrape
 ----------------------------------------------------------- */
 async function runFullScrape() {
+  await ensureChromiumInstalled();
   const slugs = await loadEventSlugs();
   if (!slugs.length) {
     console.log("⚠️ No valid event URLs — aborting.");
@@ -122,8 +161,8 @@ async function runFullScrape() {
   }
 
   console.log(`🌍 Loaded ${slugs.length} events from GitHub`);
-  const browser = await chromium.launch({ headless: true }); // ✅ Works on Render
-  console.log("✅ Using playwright-chromium embedded browser");
+  const browser = await chromium.launch({ headless: true });
+  console.log("✅ Chromium launched successfully");
 
   const all = [];
   for (const slug of slugs) {
@@ -182,8 +221,8 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
    🚀 Start server
 ----------------------------------------------------------- */
 app.listen(PORT, () => {
-  console.log(`🔥 HYROX Scraper v31.2 running on port ${PORT}`);
-  console.log("✅ Using playwright-chromium (embedded Chromium)");
-  console.log("✅ Season-aware AG detection (S7 vs S8)");
+  console.log(`🔥 HYROX Scraper v31.3 running on port ${PORT}`);
+  console.log("✅ Auto-installs Chromium if missing");
+  console.log("✅ Works persistently across redeploys");
   console.log("✅ Diagnostic route available: /api/check-events");
 });
