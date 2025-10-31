@@ -1,167 +1,192 @@
 /**
- * HYROX Scraper v3.2 (Render Free Tier Compatible)
- * -----------------------------------------------
- * ✅ Works without --with-deps
- * ✅ Uses @playwright/browser-chromium
- * ✅ Includes deterministic Chromium path fallback
- * ✅ Waits for .ranking-table to hydrate before scraping
+ * HYROX Scraper v3.4 - Render-proof, Free Tier Compatible
+ * -------------------------------------------------------
+ * ✅ Runs on Render Free Tier without persistent disk
+ * ✅ Chromium installed inside .playwright (baked into image)
+ * ✅ Supports /api/health, /api/check-events, /api/scrape, /api/scrape-all, /api/last-run
+ * ✅ Used by Google Sheets for automated podium extraction
  */
 
 import express from "express";
-import { chromium } from "playwright-core";
-import * as cheerio from "cheerio";
-import path from "path";
 import fetch from "node-fetch";
+import * as cheerio from "cheerio";
+import { chromium } from "playwright-core";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 
-const app = express();
-app.use(express.json());
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 10000;
+const app = express();
 
-// -----------------------------------------------------------------------------
-// 🧠 Utility: Resolve Chromium executable path
-// -----------------------------------------------------------------------------
-function getChromiumPath() {
-  try {
-    // Where Playwright stores browser binaries in Render's build image
-    const chromiumPath = path.join(
-      process.cwd(),
-      "node_modules",
-      "@playwright",
-      "browser-chromium",
-      ".local-browsers"
-    );
+// 🧠 Load the Chromium binary from inside the project
+const CHROMIUM_PATH = path.join(
+  __dirname,
+  ".playwright",
+  "chromium-1194",
+  "chrome-linux",
+  "chrome"
+);
 
-    // Find a subfolder like chromium-1124/chrome-linux/chrome
-    // (we’ll dynamically detect it)
-    const fs = require("fs");
-    const subdirs = fs.readdirSync(chromiumPath);
-    for (const dir of subdirs) {
-      const maybePath = path.join(
-        chromiumPath,
-        dir,
-        "chrome-linux",
-        "chrome"
-      );
-      if (fs.existsSync(maybePath)) return maybePath;
-    }
-  } catch (err) {
-    console.warn("⚠️ Could not resolve Chromium path automatically:", err.message);
+// 📦 In-memory cache
+let lastRunCache = { updated: null, events: [] };
+
+/**
+ * Utility: safely fetch HTML using Playwright (JS-rendered pages)
+ */
+async function fetchHTML(url) {
+  console.log(`🔎 Opening ${url}`);
+
+  if (!fs.existsSync(CHROMIUM_PATH)) {
+    throw new Error(`❌ Chromium binary not found at ${CHROMIUM_PATH}`);
   }
-  return null;
+
+  const browser = await chromium.launch({
+    headless: true,
+    executablePath: CHROMIUM_PATH,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  });
+
+  const page = await browser.newPage();
+  await page.goto(url, { waitUntil: "networkidle" });
+  const html = await page.content();
+  await browser.close();
+  return html;
 }
 
-// -----------------------------------------------------------------------------
-// 🩺 Health Check
-// -----------------------------------------------------------------------------
-app.get("/api/health", (req, res) => {
-  res.json({
-    status: "ok",
-    service: "HYROX Scraper",
-    node: process.version,
-    time: new Date().toISOString(),
+/**
+ * Extract podium data from rendered HTML
+ */
+function extractPodium(html, url) {
+  const $ = cheerio.load(html);
+  const rows = $("table tbody tr");
+  const podium = [];
+
+  rows.slice(0, 3).each((i, el) => {
+    const cols = $(el).find("td");
+    const name = $(cols[1]).text().trim();
+    const time = $(cols[5]).text().trim();
+    if (name && time) podium.push({ name, time });
   });
-});
 
-// -----------------------------------------------------------------------------
-// 🧾 Check Events
-// -----------------------------------------------------------------------------
-app.get("/api/check-events", async (req, res) => {
-  try {
-    const events = await fetchEventsList();
-    res.json({
-      total: events.length,
-      sample: events.slice(0, 5),
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  if (!podium.length) {
+    console.log(`⚠️ No podium found for ${url}`);
   }
-});
+  return podium;
+}
 
-// -----------------------------------------------------------------------------
-// 🏃‍♂️ Full scrape of all events
-// -----------------------------------------------------------------------------
+/**
+ * Load all events from the GitHub-hosted events.txt
+ */
+async function loadEvents() {
+  const res = await fetch(
+    "https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt"
+  );
+  const text = await res.text();
+  return text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith("https://"));
+}
+
+/**
+ * Scrape a single event URL
+ */
+async function scrapeEvent(url) {
+  try {
+    const html = await fetchHTML(url);
+    const podium = extractPodium(html, url);
+    const eventMatch = url.match(/ranking\/([^/]+)/);
+    const cityMatch = url.match(/ranking\/s\d{1,2}-\d{4}-([a-z-]+)/i);
+
+    return {
+      eventName: eventMatch ? eventMatch[1] : "Unknown Event",
+      city: cityMatch ? cityMatch[1].toUpperCase() : "Unknown City",
+      url,
+      podium,
+    };
+  } catch (err) {
+    console.error(`❌ Error scraping ${url}: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Scrape all events
+ */
 app.get("/api/scrape-all", async (req, res) => {
   try {
-    const events = await fetchEventsList();
+    const events = await loadEvents();
     console.log(`🌍 Starting full scrape of ${events.length} events...`);
 
-    const chromiumPath = getChromiumPath();
-    const browser = await chromium.launch({
-      headless: true,
-      executablePath: chromiumPath || undefined,
-      args: ["--no-sandbox", "--disable-dev-shm-usage"],
-    });
-
-    const page = await browser.newPage();
     const results = [];
-
     for (const url of events) {
-      console.log(`🔎 Scraping: ${url}`);
-      const podium = await scrapePodium(page, url);
-      results.push({ url, podium });
+      const result = await scrapeEvent(url);
+      if (result) results.push(result);
     }
 
-    await browser.close();
-    console.log("✅ Scrape complete.");
-    res.json({ count: results.length, results });
+    lastRunCache = { updated: new Date().toISOString(), events: results };
+    console.log(`✅ Full scrape complete. ${results.length} events cached.`);
+
+    res.json({ total: results.length, updated: lastRunCache.updated });
   } catch (err) {
     console.error("❌ scrape-all error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// -----------------------------------------------------------------------------
-// 🥇 Scrape a single event podium
-// -----------------------------------------------------------------------------
-async function scrapePodium(page, url) {
+/**
+ * Scrape a single URL
+ */
+app.get("/api/scrape", async (req, res) => {
+  const { url } = req.query;
+  if (!url) return res.status(400).json({ error: "Missing ?url parameter" });
+
   try {
-    await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
-    await page.waitForSelector(".ranking-table tbody tr", { timeout: 25000 });
-
-    const html = await page.content();
-    const $ = cheerio.load(html);
-    const podium = [];
-
-    $(".ranking-table tbody tr")
-      .slice(0, 3)
-      .each((_, el) => {
-        const cells = $(el).find("td");
-        const rank = $(cells[0]).text().trim();
-        const name = $(cells[1]).text().trim();
-        const time = $(cells[cells.length - 1]).text().trim();
-        podium.push({ rank, name, time });
-      });
-
-    if (podium.length === 0)
-      console.warn(`⚠️ No podium for ${url}`);
-    else
-      console.log(`🏆 ${url} → ${podium[0].name} (${podium[0].time})`);
-
-    return podium;
-  } catch (e) {
-    console.error(`💥 Failed to scrape ${url}: ${e.message}`);
-    return [];
+    const data = await scrapeEvent(url);
+    if (!data) return res.status(404).json({ error: "No podium data found" });
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
-}
+});
 
-// -----------------------------------------------------------------------------
-// 📜 Fetch list of event URLs (dynamic source)
-// -----------------------------------------------------------------------------
-async function fetchEventsList() {
-  const res = await fetch(
-    "https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt"
-  );
-  if (!res.ok) throw new Error("Failed to load events.txt");
-  const text = await res.text();
-  return text
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l && l.startsWith("https"));
-}
+/**
+ * Return cached data
+ */
+app.get("/api/last-run", (req, res) => {
+  res.json(lastRunCache);
+});
 
-// -----------------------------------------------------------------------------
-// 🚀 Start server
-// -----------------------------------------------------------------------------
+/**
+ * Health check
+ */
+app.get("/api/health", (req, res) => {
+  res.json({
+    status: "ok",
+    service: "HYROX Scraper",
+    node: process.version,
+    time: new Date().toISOString(),
+    cacheCount: lastRunCache.events.length || 0,
+  });
+});
+
+/**
+ * Check events file
+ */
+app.get("/api/check-events", async (req, res) => {
+  try {
+    const events = await loadEvents();
+    res.json({ total: events.length, sample: events.slice(0, 5) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Start server
+ */
 app.listen(PORT, () => {
   console.log(`✅ HYROX Scraper running on port ${PORT}`);
 });
