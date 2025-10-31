@@ -89,27 +89,29 @@ async function loadEvents() {
     .filter((l) => l.startsWith("https://"));
 }
 
-/**
- * Scrape a single event URL
- */
 async function scrapeEvent(url) {
   try {
-    const html = await fetchHTML(url);
-    const podium = extractPodium(html, url);
-    const eventMatch = url.match(/ranking\/([^/]+)/);
-    const cityMatch = url.match(/ranking\/s\d{1,2}-\d{4}-([a-z-]+)/i);
+    const browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    await page.goto(url, { waitUntil: "networkidle" });
 
-    return {
-      eventName: eventMatch ? eventMatch[1] : "Unknown Event",
-      city: cityMatch ? cityMatch[1].toUpperCase() : "Unknown City",
-      url,
-      podium,
-    };
+    const podium = await page.evaluate(() => {
+      const rows = Array.from(document.querySelectorAll(".rankingRow"));
+      return rows.slice(0, 3).map(row => ({
+        name: row.querySelector(".athleteName")?.textContent.trim(),
+        time: row.querySelector(".athleteTime")?.textContent.trim(),
+      }));
+    });
+
+    await browser.close();
+
+    return { url, podium };
   } catch (err) {
     console.error(`❌ Error scraping ${url}: ${err.message}`);
     return null;
   }
 }
+
 
 /**
  * Scrape all events
