@@ -1,24 +1,28 @@
 /**
- * HYROX Scraper v36.1 (Auto-install Firefox)
+ * HYROX Scraper v36.2 – Auto-Install Firefox Fix
  * -------------------------------------------------------------
- * ✅ Fixes missing Firefox binary on Render Free Tier
- * ✅ Automatically installs browser at runtime if missing
+ * ✅ Works on Render Free Tier (no Chromium)
+ * ✅ Automatically installs Firefox binary at runtime if missing
+ * ✅ Uses playwright-firefox for scraping (leaner)
  * -------------------------------------------------------------
  */
 
 import express from "express";
 import fetch from "node-fetch";
 import * as cheerio from "cheerio";
-import { firefox, installBrowsersForPlaywright } from "playwright-firefox";
+import { firefox } from "playwright-firefox";
 
-// Ensure Firefox is installed in this runtime container
+// -------------------------------------------------------------
+//  Ensure the Firefox browser binary exists inside the container
+// -------------------------------------------------------------
 (async () => {
   try {
     console.log("🦊 Checking Firefox installation...");
+    const { installBrowsersForPlaywright } = await import("playwright/lib/install/installer.js");
     await installBrowsersForPlaywright();
     console.log("✅ Firefox installed and ready.");
   } catch (err) {
-    console.log("⚠️ Firefox install error:", err.message);
+    console.log("⚠️ Firefox install check failed:", err.message);
   }
 })();
 
