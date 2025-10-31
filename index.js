@@ -1,207 +1,167 @@
 /**
- * HYROX Scraper v37.0 – Render Free Tier (No Browser)
- * -------------------------------------------------------------
- * ✅ Parses data directly from window.__NUXT__ JSON
- * ✅ Works for all solo & doubles categories
- * ✅ No Playwright, no memory issues
- * ✅ Compatible with Google Sheets integration
- * -------------------------------------------------------------
+ * HYROX Scraper v3.2 (Render Free Tier Compatible)
+ * -----------------------------------------------
+ * ✅ Works without --with-deps
+ * ✅ Uses @playwright/browser-chromium
+ * ✅ Includes deterministic Chromium path fallback
+ * ✅ Waits for .ranking-table to hydrate before scraping
  */
 
 import express from "express";
+import cheerio from "cheerio";
+import { chromium } from "@playwright/browser-chromium";
+import path from "path";
 import fetch from "node-fetch";
 
 const app = express();
-const PORT = process.env.PORT || 1000;
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json());
+const PORT = process.env.PORT || 10000;
 
-// ---------------- Cache ----------------
-let cache = Object.create(null);
-
-// ---------------- Config ----------------
-const AGE_GROUPS = {
-  s8: ["45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79"],
-  s7: ["50-59", "60-69"]
-};
-
-const EVENT_TYPES = [
-  { key: "men", label: "SOLO MEN" },
-  { key: "women", label: "SOLO WOMEN" },
-  { key: "doubles-men", label: "DOUBLE MEN" },
-  { key: "doubles-women", label: "DOUBLE WOMEN" },
-  { key: "doubles-mixed", label: "DOUBLE MIXED" }
-];
-
-const UA = "Mozilla/5.0 (X11; Linux x86_64; rv:118.0) Gecko/20100101 Firefox/118.0";
-
-// ---------------- Helpers ----------------
-async function loadEventList() {
-  const url = "https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt";
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to load events list (${res.status})`);
-  const text = await res.text();
-  return text.split(/\r?\n/).map(u => u.trim()).filter(u => u.startsWith("http"));
-}
-
-function parseEventUrl(u) {
-  const m = u.match(/\/ranking\/(s\d+)-(\d{4})-([^/?#]+)/i);
-  return {
-    season: m?.[1]?.toLowerCase() || "s8",
-    year: m?.[2] || "2025",
-    city: (m?.[3] || "unknown").toUpperCase()
-  };
-}
-
-function buildStrictUrl(base, typeKey, age) {
-  if (typeKey.startsWith("doubles-")) {
-    const gender = typeKey.split("-")[1];
-    return `${base}-hyrox-doubles-${gender}?ag=${encodeURIComponent(age)}`;
-  } else {
-    return `${base}-hyrox-${typeKey}?ag=${encodeURIComponent(age)}`;
-  }
-}
-
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-// ---------------- Parser ----------------
-function extractNuxtData(html) {
-  const match = html.match(/window\.__NUXT__\s*=\s*(\{.*?\})<\/script>/s);
-  if (!match) return null;
+// -----------------------------------------------------------------------------
+// 🧠 Utility: Resolve Chromium executable path
+// -----------------------------------------------------------------------------
+function getChromiumPath() {
   try {
-    return JSON.parse(match[1]);
-  } catch (e) {
-    console.log("⚠️ Failed to parse __NUXT__ JSON:", e.message);
-    return null;
-  }
-}
+    // Where Playwright stores browser binaries in Render's build image
+    const chromiumPath = path.join(
+      process.cwd(),
+      "node_modules",
+      "@playwright",
+      "browser-chromium",
+      ".local-browsers"
+    );
 
-function extractPodiumFromNuxt(nuxtData) {
-  if (!nuxtData || !nuxtData.data || !Array.isArray(nuxtData.data)) return [];
-  const root = nuxtData.data[0];
-  if (!root) return [];
-
-  // Look for an array that contains ranking info
-  let rankingArray =
-    root.ranking ||
-    root.rankings ||
-    root.results ||
-    (root.page && root.page.ranking) ||
-    [];
-
-  if (!Array.isArray(rankingArray) || !rankingArray.length) return [];
-
-  const podium = rankingArray.slice(0, 3).map((r) => ({
-    name: r.name || r.fullName || r.athlete || "",
-    time: r.time || r.result || r.finishTime || ""
-  }));
-
-  return podium.filter(p => p.name && p.time);
-}
-
-// ---------------- Scraper ----------------
-async function scrapeEvent(eventUrl) {
-  const { season, year, city } = parseEventUrl(eventUrl);
-  const groups = AGE_GROUPS[season] || AGE_GROUPS.s8;
-  const results = [];
-
-  for (const type of EVENT_TYPES) {
-    for (const age of groups) {
-      const key = `${season}_${year}_${city}_${type.key}_${age}`;
-      if (cache[key]) continue;
-
-      const url = buildStrictUrl(eventUrl, type.key, age);
-      console.log("🔎", url);
-
-      let podium = [];
-      try {
-        const res = await fetch(url, { headers: { "User-Agent": UA } });
-        if (res.ok) {
-          const html = await res.text();
-          const nuxt = extractNuxtData(html);
-          podium = extractPodiumFromNuxt(nuxt);
-        }
-      } catch (e) {
-        console.log(`⚠️ Fetch failed: ${e.message}`);
-      }
-
-      if (podium.length) {
-        const data = {
-          key,
-          eventName: `Ranking of ${year} ${city} HYROX ${type.label}`,
-          city,
-          year,
-          season,
-          category: age,
-          gender: type.key.includes("men")
-            ? "Men"
-            : type.key.includes("women")
-            ? "Women"
-            : "Mixed",
-          type: type.key.includes("doubles") ? "Double" : "Solo",
-          podium,
-          url
-        };
-        cache[key] = data;
-        results.push(data);
-        console.log(`✅ Added ${city} ${type.key} ${age}`);
-      } else {
-        console.log(`⚠️ No podium for ${city} ${type.key} ${age}`);
-      }
-
-      await sleep(250);
+    // Find a subfolder like chromium-1124/chrome-linux/chrome
+    // (we’ll dynamically detect it)
+    const fs = require("fs");
+    const subdirs = fs.readdirSync(chromiumPath);
+    for (const dir of subdirs) {
+      const maybePath = path.join(
+        chromiumPath,
+        dir,
+        "chrome-linux",
+        "chrome"
+      );
+      if (fs.existsSync(maybePath)) return maybePath;
     }
+  } catch (err) {
+    console.warn("⚠️ Could not resolve Chromium path automatically:", err.message);
   }
-
-  return results;
+  return null;
 }
 
-async function runFullScrape() {
-  console.log("🌍 Starting full scrape...");
-  const events = await loadEventList();
-  let added = 0;
-  for (const url of events) {
-    const batch = await scrapeEvent(url);
-    added += batch.length;
-  }
-  console.log(`🎯 Done. ${added} podiums added.`);
-  return { added, total: Object.keys(cache).length };
-}
-
-// ---------------- API ----------------
+// -----------------------------------------------------------------------------
+// 🩺 Health Check
+// -----------------------------------------------------------------------------
 app.get("/api/health", (req, res) => {
   res.json({
     status: "ok",
     service: "HYROX Scraper",
     node: process.version,
     time: new Date().toISOString(),
-    cacheCount: Object.keys(cache).length
   });
 });
 
+// -----------------------------------------------------------------------------
+// 🧾 Check Events
+// -----------------------------------------------------------------------------
 app.get("/api/check-events", async (req, res) => {
   try {
-    const urls = await loadEventList();
-    res.json({ total: urls.length, sample: urls.slice(0, 5) });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+    const events = await fetchEventsList();
+    res.json({
+      total: events.length,
+      sample: events.slice(0, 5),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
+// -----------------------------------------------------------------------------
+// 🏃‍♂️ Full scrape of all events
+// -----------------------------------------------------------------------------
 app.get("/api/scrape-all", async (req, res) => {
   try {
-    const result = await runFullScrape();
-    res.json(result);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+    const events = await fetchEventsList();
+    console.log(`🌍 Starting full scrape of ${events.length} events...`);
+
+    const chromiumPath = getChromiumPath();
+    const browser = await chromium.launch({
+      headless: true,
+      executablePath: chromiumPath || undefined,
+      args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    });
+
+    const page = await browser.newPage();
+    const results = [];
+
+    for (const url of events) {
+      console.log(`🔎 Scraping: ${url}`);
+      const podium = await scrapePodium(page, url);
+      results.push({ url, podium });
+    }
+
+    await browser.close();
+    console.log("✅ Scrape complete.");
+    res.json({ count: results.length, results });
+  } catch (err) {
+    console.error("❌ scrape-all error:", err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
-app.get("/api/cache", (req, res) => {
-  res.json({ events: Object.values(cache) });
-});
+// -----------------------------------------------------------------------------
+// 🥇 Scrape a single event podium
+// -----------------------------------------------------------------------------
+async function scrapePodium(page, url) {
+  try {
+    await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
+    await page.waitForSelector(".ranking-table tbody tr", { timeout: 25000 });
 
-// ---------------- Start ----------------
+    const html = await page.content();
+    const $ = cheerio.load(html);
+    const podium = [];
+
+    $(".ranking-table tbody tr")
+      .slice(0, 3)
+      .each((_, el) => {
+        const cells = $(el).find("td");
+        const rank = $(cells[0]).text().trim();
+        const name = $(cells[1]).text().trim();
+        const time = $(cells[cells.length - 1]).text().trim();
+        podium.push({ rank, name, time });
+      });
+
+    if (podium.length === 0)
+      console.warn(`⚠️ No podium for ${url}`);
+    else
+      console.log(`🏆 ${url} → ${podium[0].name} (${podium[0].time})`);
+
+    return podium;
+  } catch (e) {
+    console.error(`💥 Failed to scrape ${url}: ${e.message}`);
+    return [];
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 📜 Fetch list of event URLs (dynamic source)
+// -----------------------------------------------------------------------------
+async function fetchEventsList() {
+  const res = await fetch(
+    "https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt"
+  );
+  if (!res.ok) throw new Error("Failed to load events.txt");
+  const text = await res.text();
+  return text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l && l.startsWith("https"));
+}
+
+// -----------------------------------------------------------------------------
+// 🚀 Start server
+// -----------------------------------------------------------------------------
 app.listen(PORT, () => {
-  console.log(`🔥 HYROX Scraper v37.0 running on port ${PORT}`);
-  console.log("✅ /api/health  ✅ /api/check-events  ✅ /api/scrape-all  ✅ /api/cache");
+  console.log(`✅ HYROX Scraper running on port ${PORT}`);
 });
