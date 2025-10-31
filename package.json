@@ -1,12 +1,11 @@
 {
   "name": "hyrox-scraper",
-  "version": "36.0.0",
+  "version": "36.1.0",
   "type": "module",
   "engines": {
     "node": ">=18"
   },
   "scripts": {
-    "postinstall": "npx playwright install firefox",
     "start": "node index.js"
   },
   "dependencies": {
