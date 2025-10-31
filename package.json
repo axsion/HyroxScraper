@@ -1,6 +1,6 @@
 {
   "name": "hyrox-scraper",
-  "version": "3.4.0",
+  "version": "3.5.0",
   "type": "module",
   "scripts": {
     "start": "node index.js"
@@ -9,6 +9,6 @@
     "express": "^4.19.2",
     "node-fetch": "^3.3.2",
     "cheerio": "^1.0.0-rc.12",
-    "playwright-core": "^1.48.0"
+    "playwright": "^1.48.0"
   }
 }
