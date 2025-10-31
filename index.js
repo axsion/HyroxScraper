@@ -1,17 +1,26 @@
 /**
- * HYROX Scraper v36.0 (Render + Firefox Edition)
+ * HYROX Scraper v36.1 (Auto-install Firefox)
  * -------------------------------------------------------------
- * ✅ Runs fully on Render Free Tier (no Chromium)
- * ✅ Uses Playwright-Firefox for JS-rendered tables
- * ✅ Falls back to static fetch + Cheerio
- * ✅ Crawl all SOLO + DOUBLE age groups (S7/S8)
+ * ✅ Fixes missing Firefox binary on Render Free Tier
+ * ✅ Automatically installs browser at runtime if missing
  * -------------------------------------------------------------
  */
 
 import express from "express";
 import fetch from "node-fetch";
 import * as cheerio from "cheerio";
-import { firefox } from "playwright-firefox";
+import { firefox, installBrowsersForPlaywright } from "playwright-firefox";
+
+// Ensure Firefox is installed in this runtime container
+(async () => {
+  try {
+    console.log("🦊 Checking Firefox installation...");
+    await installBrowsersForPlaywright();
+    console.log("✅ Firefox installed and ready.");
+  } catch (err) {
+    console.log("⚠️ Firefox install error:", err.message);
+  }
+})();
 
 const app = express();
 const PORT = process.env.PORT || 1000;
