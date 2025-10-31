@@ -1,15 +1,16 @@
 {
   "name": "hyrox-scraper",
-  "version": "37.0.0",
+  "version": "3.1.0",
   "type": "module",
-  "engines": {
-    "node": ">=18"
-  },
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "postinstall": "npx playwright install chromium"
   },
   "dependencies": {
+    "@playwright/browser-chromium": "^1.48.0",
+    "playwright-core": "^1.48.0",
     "express": "^4.19.2",
+    "cheerio": "^1.0.0-rc.12",
     "node-fetch": "^3.3.2"
   }
 }
