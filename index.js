@@ -1,17 +1,15 @@
 /**
- * HYROX Scraper v36.3 – Render Free Tier (Firefox Auto)
+ * HYROX Scraper v37.0 – Render Free Tier (No Browser)
  * -------------------------------------------------------------
- * ✅ Uses Playwright-Firefox (lightweight headless browser)
- * ✅ Automatically installs Firefox at each startup via start command
- * ✅ Falls back to static Cheerio parsing
- * ✅ 100 % compatible with Render Free Tier (no Chromium cache issues)
+ * ✅ Parses data directly from window.__NUXT__ JSON
+ * ✅ Works for all solo & doubles categories
+ * ✅ No Playwright, no memory issues
+ * ✅ Compatible with Google Sheets integration
  * -------------------------------------------------------------
  */
 
 import express from "express";
 import fetch from "node-fetch";
-import * as cheerio from "cheerio";
-import { firefox } from "playwright-firefox";
 
 const app = express();
 const PORT = process.env.PORT || 1000;
@@ -22,16 +20,16 @@ let cache = Object.create(null);
 
 // ---------------- Config ----------------
 const AGE_GROUPS = {
-  s8: ["45-49","50-54","55-59","60-64","65-69","70-74","75-79"],
-  s7: ["50-59","60-69"]
+  s8: ["45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79"],
+  s7: ["50-59", "60-69"]
 };
 
 const EVENT_TYPES = [
-  { key:"men",label:"SOLO MEN" },
-  { key:"women",label:"SOLO WOMEN" },
-  { key:"doubles-men",label:"DOUBLE MEN" },
-  { key:"doubles-women",label:"DOUBLE WOMEN" },
-  { key:"doubles-mixed",label:"DOUBLE MIXED" }
+  { key: "men", label: "SOLO MEN" },
+  { key: "women", label: "SOLO WOMEN" },
+  { key: "doubles-men", label: "DOUBLE MEN" },
+  { key: "doubles-women", label: "DOUBLE WOMEN" },
+  { key: "doubles-mixed", label: "DOUBLE MIXED" }
 ];
 
 const UA = "Mozilla/5.0 (X11; Linux x86_64; rv:118.0) Gecko/20100101 Firefox/118.0";
@@ -65,39 +63,42 @@ function buildStrictUrl(base, typeKey, age) {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-function extractPodium(html) {
-  const $ = cheerio.load(html);
-  let rows = $(".ranking-table tbody tr");
-  if (!rows.length) rows = $(".table-ranking tbody tr");
-  const podium = [];
-  rows.slice(0,3).each((_,row)=>{
-    const c = $(row).find("td");
-    const name = $(c[1]).text().trim();
-    const time = $(c[4]).text().trim();
-    if (name && time) podium.push({ name, time });
-  });
-  return podium;
-}
-
-// ---------------- Scraping ----------------
-async function fetchRenderedHtml(url) {
-  let browser;
+// ---------------- Parser ----------------
+function extractNuxtData(html) {
+  const match = html.match(/window\.__NUXT__\s*=\s*(\{.*?\})<\/script>/s);
+  if (!match) return null;
   try {
-    browser = await firefox.launch({ headless: true });
-    const context = await browser.newContext({ userAgent: UA });
-    const page = await context.newPage();
-    await page.goto(url, { waitUntil: "networkidle", timeout: 45000 });
-    await page.waitForTimeout(1500);
-    const html = await page.content();
-    await browser.close();
-    return html;
+    return JSON.parse(match[1]);
   } catch (e) {
-    if (browser) await browser.close();
-    console.log(`⚠️ Firefox failed: ${e.message}`);
+    console.log("⚠️ Failed to parse __NUXT__ JSON:", e.message);
     return null;
   }
 }
 
+function extractPodiumFromNuxt(nuxtData) {
+  if (!nuxtData || !nuxtData.data || !Array.isArray(nuxtData.data)) return [];
+  const root = nuxtData.data[0];
+  if (!root) return [];
+
+  // Look for an array that contains ranking info
+  let rankingArray =
+    root.ranking ||
+    root.rankings ||
+    root.results ||
+    (root.page && root.page.ranking) ||
+    [];
+
+  if (!Array.isArray(rankingArray) || !rankingArray.length) return [];
+
+  const podium = rankingArray.slice(0, 3).map((r) => ({
+    name: r.name || r.fullName || r.athlete || "",
+    time: r.time || r.result || r.finishTime || ""
+  }));
+
+  return podium.filter(p => p.name && p.time);
+}
+
+// ---------------- Scraper ----------------
 async function scrapeEvent(eventUrl) {
   const { season, year, city } = parseEventUrl(eventUrl);
   const groups = AGE_GROUPS[season] || AGE_GROUPS.s8;
@@ -112,34 +113,33 @@ async function scrapeEvent(eventUrl) {
       console.log("🔎", url);
 
       let podium = [];
-
-      // 1. Try static HTML
       try {
         const res = await fetch(url, { headers: { "User-Agent": UA } });
         if (res.ok) {
           const html = await res.text();
-          podium = extractPodium(html);
+          const nuxt = extractNuxtData(html);
+          podium = extractPodiumFromNuxt(nuxt);
         }
-      } catch (_) {}
-
-      // 2. If not found, render with Firefox
-      if (!podium.length) {
-        const html = await fetchRenderedHtml(url);
-        if (html) podium = extractPodium(html);
+      } catch (e) {
+        console.log(`⚠️ Fetch failed: ${e.message}`);
       }
 
       if (podium.length) {
         const data = {
           key,
           eventName: `Ranking of ${year} ${city} HYROX ${type.label}`,
-          city, year, season, category: age,
+          city,
+          year,
+          season,
+          category: age,
           gender: type.key.includes("men")
             ? "Men"
             : type.key.includes("women")
             ? "Women"
             : "Mixed",
           type: type.key.includes("doubles") ? "Double" : "Solo",
-          podium, url
+          podium,
+          url
         };
         cache[key] = data;
         results.push(data);
@@ -148,7 +148,7 @@ async function scrapeEvent(eventUrl) {
         console.log(`⚠️ No podium for ${city} ${type.key} ${age}`);
       }
 
-      await sleep(300);
+      await sleep(250);
     }
   }
 
@@ -167,41 +167,41 @@ async function runFullScrape() {
   return { added, total: Object.keys(cache).length };
 }
 
-// ---------------- API Routes ----------------
-app.get("/api/health", (req,res)=>{
+// ---------------- API ----------------
+app.get("/api/health", (req, res) => {
   res.json({
-    status:"ok",
-    service:"HYROX Scraper",
-    node:process.version,
-    time:new Date().toISOString(),
-    cacheCount:Object.keys(cache).length
+    status: "ok",
+    service: "HYROX Scraper",
+    node: process.version,
+    time: new Date().toISOString(),
+    cacheCount: Object.keys(cache).length
   });
 });
 
-app.get("/api/check-events", async (req,res)=>{
+app.get("/api/check-events", async (req, res) => {
   try {
     const urls = await loadEventList();
-    res.json({total:urls.length,sample:urls.slice(0,5)});
-  } catch(e){
-    res.status(500).json({error:e.message});
+    res.json({ total: urls.length, sample: urls.slice(0, 5) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
-app.get("/api/scrape-all", async (req,res)=>{
+app.get("/api/scrape-all", async (req, res) => {
   try {
     const result = await runFullScrape();
     res.json(result);
-  } catch(e){
-    res.status(500).json({error:e.message});
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
-app.get("/api/cache", (req,res)=>{
-  res.json({events:Object.values(cache)});
+app.get("/api/cache", (req, res) => {
+  res.json({ events: Object.values(cache) });
 });
 
 // ---------------- Start ----------------
-app.listen(PORT, ()=>{
-  console.log(`🔥 HYROX Scraper v36.3 (Firefox) running on port ${PORT}`);
+app.listen(PORT, () => {
+  console.log(`🔥 HYROX Scraper v37.0 running on port ${PORT}`);
   console.log("✅ /api/health  ✅ /api/check-events  ✅ /api/scrape-all  ✅ /api/cache");
 });
