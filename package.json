@@ -1,10 +1,11 @@
 {
   "name": "hyrox-scraper",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "type": "module",
+  "description": "HYROX podium scraper for Render + Google Sheets integration",
+  "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "postinstall": "npx playwright install chromium"
+    "start": "node index.js"
   },
   "dependencies": {
     "@playwright/browser-chromium": "^1.48.0",
@@ -12,5 +13,8 @@
     "express": "^4.19.2",
     "cheerio": "^1.0.0-rc.12",
     "node-fetch": "^3.3.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }
