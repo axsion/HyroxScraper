@@ -1,6 +1,6 @@
 {
   "name": "hyrox-scraper",
-  "version": "36.1.0",
+  "version": "36.2.0",
   "type": "module",
   "engines": {
     "node": ">=18"
@@ -12,6 +12,7 @@
     "express": "^4.19.2",
     "node-fetch": "^3.3.2",
     "cheerio": "^1.0.0-rc.12",
+    "playwright": "^1.47.0",
     "playwright-firefox": "^1.47.0"
   }
 }
