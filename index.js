@@ -1,9 +1,10 @@
 /**
- * HYROX Scraper v36.2 – Auto-Install Firefox Fix
+ * HYROX Scraper v36.3 – Render Free Tier (Firefox Auto)
  * -------------------------------------------------------------
- * ✅ Works on Render Free Tier (no Chromium)
- * ✅ Automatically installs Firefox binary at runtime if missing
- * ✅ Uses playwright-firefox for scraping (leaner)
+ * ✅ Uses Playwright-Firefox (lightweight headless browser)
+ * ✅ Automatically installs Firefox at each startup via start command
+ * ✅ Falls back to static Cheerio parsing
+ * ✅ 100 % compatible with Render Free Tier (no Chromium cache issues)
  * -------------------------------------------------------------
  */
 
@@ -11,20 +12,6 @@ import express from "express";
 import fetch from "node-fetch";
 import * as cheerio from "cheerio";
 import { firefox } from "playwright-firefox";
-
-// -------------------------------------------------------------
-//  Ensure the Firefox browser binary exists inside the container
-// -------------------------------------------------------------
-(async () => {
-  try {
-    console.log("🦊 Checking Firefox installation...");
-    const { installBrowsersForPlaywright } = await import("playwright/lib/install/installer.js");
-    await installBrowsersForPlaywright();
-    console.log("✅ Firefox installed and ready.");
-  } catch (err) {
-    console.log("⚠️ Firefox install check failed:", err.message);
-  }
-})();
 
 const app = express();
 const PORT = process.env.PORT || 1000;
@@ -47,8 +34,7 @@ const EVENT_TYPES = [
   { key:"doubles-mixed",label:"DOUBLE MIXED" }
 ];
 
-const UA =
-  "Mozilla/5.0 (X11; Linux x86_64; rv:118.0) Gecko/20100101 Firefox/118.0";
+const UA = "Mozilla/5.0 (X11; Linux x86_64; rv:118.0) Gecko/20100101 Firefox/118.0";
 
 // ---------------- Helpers ----------------
 async function loadEventList() {
@@ -64,7 +50,7 @@ function parseEventUrl(u) {
   return {
     season: m?.[1]?.toLowerCase() || "s8",
     year: m?.[2] || "2025",
-    city: (m?.[3] || "unknown").toUpperCase(),
+    city: (m?.[3] || "unknown").toUpperCase()
   };
 }
 
@@ -94,7 +80,6 @@ function extractPodium(html) {
 }
 
 // ---------------- Scraping ----------------
-
 async function fetchRenderedHtml(url) {
   let browser;
   try {
@@ -102,7 +87,7 @@ async function fetchRenderedHtml(url) {
     const context = await browser.newContext({ userAgent: UA });
     const page = await context.newPage();
     await page.goto(url, { waitUntil: "networkidle", timeout: 45000 });
-    await page.waitForTimeout(1500); // ensure table loads
+    await page.waitForTimeout(1500);
     const html = await page.content();
     await browser.close();
     return html;
@@ -128,7 +113,7 @@ async function scrapeEvent(eventUrl) {
 
       let podium = [];
 
-      // 1. Try static HTML first (cheap)
+      // 1. Try static HTML
       try {
         const res = await fetch(url, { headers: { "User-Agent": UA } });
         if (res.ok) {
@@ -137,7 +122,7 @@ async function scrapeEvent(eventUrl) {
         }
       } catch (_) {}
 
-      // 2. If nothing found, use Playwright-Firefox
+      // 2. If not found, render with Firefox
       if (!podium.length) {
         const html = await fetchRenderedHtml(url);
         if (html) podium = extractPodium(html);
@@ -217,6 +202,6 @@ app.get("/api/cache", (req,res)=>{
 
 // ---------------- Start ----------------
 app.listen(PORT, ()=>{
-  console.log(`🔥 HYROX Scraper v36.0 (Firefox) running on port ${PORT}`);
+  console.log(`🔥 HYROX Scraper v36.3 (Firefox) running on port ${PORT}`);
   console.log("✅ /api/health  ✅ /api/check-events  ✅ /api/scrape-all  ✅ /api/cache");
 });
