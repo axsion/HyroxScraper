@@ -8,8 +8,8 @@
  */
 
 import express from "express";
+import { chromium } from "playwright-core";
 import * as cheerio from "cheerio";
-import { chromium } from "@playwright/browser-chromium";
 import path from "path";
 import fetch from "node-fetch";
 
