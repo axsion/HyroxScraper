@@ -1,9 +1,9 @@
 /**
- * HYROX Scraper v3.6 - Fly.io Playwright Edition
- * -------------------------------------------------------
- * ✅ Runs on Playwright base image with Chromium preinstalled
- * ✅ Supports endpoints for health, events, scrape-all, and last-run
- * ✅ Reads events.txt dynamically from GitHub
+ * HYROX Scraper v3.6 — Fly.io Edition
+ * ------------------------------------
+ * ✅ Uses Playwright Chromium (from Playwright base image)
+ * ✅ Dynamic events list from GitHub raw file
+ * ✅ Express server with health checks and scrape endpoints
  */
 
 import express from "express";
@@ -11,106 +11,100 @@ import fetch from "node-fetch";
 import * as cheerio from "cheerio";
 import { chromium } from "playwright";
 import fs from "fs";
+import path from "path";
 
 const app = express();
 const PORT = process.env.PORT || 10000;
-let lastRun = null;
 
-// URL to your events list (GitHub raw)
-const EVENTS_URL = "https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt";
-
-// Helper to fetch and normalize events list
-async function getEventList() {
-  const res = await fetch(EVENTS_URL);
-  const text = await res.text();
-  const urls = text.split("\n").map(u => u.trim()).filter(u => u.length > 0);
-  return urls;
-}
-
-// Helper to scrape a single event page
-async function scrapeEvent(url, mode = "all") {
-  console.log(`🔎 Opening ${url}`);
-  const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
-
-  try {
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 90000 });
-    const html = await page.content();
-    const $ = cheerio.load(html);
-
-    const eventTitle = $("h2").first().text().trim();
-    const results = [];
-
-    $(".results").each((_, el) => {
-      const category = $(el).find("h3").text().trim();
-      const rows = $(el).find("tbody tr");
-
-      rows.each((i, row) => {
-        const cols = $(row).find("td").map((_, td) => $(td).text().trim()).get();
-        if (cols.length >= 3) {
-          results.push({
-            event: eventTitle,
-            category,
-            position: cols[0],
-            athlete: cols[1],
-            time: cols[2],
-          });
-        }
-      });
-    });
-
-    await browser.close();
-    return { url, event: eventTitle, count: results.length, results };
-  } catch (err) {
-    console.error(`❌ Error scraping ${url}: ${err.message}`);
-    await browser.close();
-    return { url, error: err.message };
-  }
-}
-
-// ✅ HEALTH endpoint
-app.get("/api/health", (_, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+// ✅ Health check
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", time: new Date().toISOString() });
 });
 
-// ✅ CHECK EVENTS
-app.get("/api/check-events", async (_, res) => {
+// ✅ Check list of events (from GitHub)
+app.get("/api/check-events", async (req, res) => {
   try {
-    const urls = await getEventList();
+    const response = await fetch(
+      "https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt"
+    );
+    const text = await response.text();
+    const urls = text.split("\n").filter((l) => l.startsWith("http"));
     res.json({ total: urls.length, sample: urls.slice(0, 5) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ✅ SCRAPE ALL
+// ✅ Scrape all events (solo or double)
 app.get("/api/scrape-all", async (req, res) => {
   const mode = req.query.mode || "all";
-  const urls = await getEventList();
-
-  console.log(`🧠 Starting scrape-all in mode: ${mode}`);
+  const results = [];
   const start = Date.now();
-  const allResults = [];
 
-  for (const url of urls) {
-    const result = await scrapeEvent(url, mode);
-    if (result.results) allResults.push(...result.results);
+  try {
+    const response = await fetch(
+      "https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt"
+    );
+    const text = await response.text();
+    const urls = text.split("\n").filter((l) => l.startsWith("http"));
+
+    const browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext();
+
+    for (const url of urls) {
+      console.log(`🔎 Opening ${url}`);
+      try {
+        const page = await context.newPage();
+        await page.goto(url, { timeout: 60000 });
+        const html = await page.content();
+        const $ = cheerio.load(html);
+
+        const title = $("h1, .title, .event-title").first().text().trim();
+        const podiums = [];
+
+        $("table tr").each((_, el) => {
+          const tds = $(el).find("td");
+          if (tds.length >= 3) {
+            podiums.push({
+              rank: $(tds[0]).text().trim(),
+              name: $(tds[1]).text().trim(),
+              time: $(tds[2]).text().trim(),
+            });
+          }
+        });
+
+        results.push({ event: title || url, podiums });
+        await page.close();
+      } catch (e) {
+        console.error(`❌ Error scraping ${url}: ${e.message}`);
+      }
+    }
+
+    await browser.close();
+    const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+
+    console.log(`✅ Full scrape complete: ${results.length} events in ${elapsed}s`);
+    res.json({ total: results.length, updated: new Date().toISOString() });
+  } catch (err) {
+    console.error("❌ scrape-all failed:", err);
+    res.status(500).json({ error: err.message });
   }
-
-  const duration = ((Date.now() - start) / 1000).toFixed(1);
-  lastRun = { total: allResults.length, updated: new Date().toISOString() };
-
-  console.log(`🏁 Scrape complete: ${allResults.length} results in ${duration}s`);
-  res.json(lastRun);
 });
 
-// ✅ LAST RUN
-app.get("/api/last-run", (_, res) => {
-  if (!lastRun) return res.json({ status: "no runs yet" });
-  res.json(lastRun);
+// ✅ Root info page
+app.get("/", (req, res) => {
+  res.send(`
+    <h2>HYROX Scraper v3.6 (Fly.io)</h2>
+    <p>Endpoints:</p>
+    <ul>
+      <li><a href="/api/health">/api/health</a></li>
+      <li><a href="/api/check-events">/api/check-events</a></li>
+      <li><a href="/api/scrape-all">/api/scrape-all</a></li>
+    </ul>
+  `);
 });
 
-// ✅ KEEP SERVER ALIVE
-app.listen(PORT, () => {
+// ✅ Start the server and keep container alive
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ HYROX Scraper running on port ${PORT}`);
 });
