@@ -5,21 +5,19 @@ primary_region = "yyz"
   PORT = "10000"
   NODE_ENV = "production"
 
-[build]
-  image = "mcr.microsoft.com/playwright:v1.49.0-jammy"
+# 👇 remove or comment this line
+# [build]
+#   image = "mcr.microsoft.com/playwright:v1.49.0-jammy"
 
 [[services]]
   protocol = "tcp"
   internal_port = 10000
-
   [[services.ports]]
     port = 80
     handlers = ["http"]
-
   [[services.ports]]
     port = 443
     handlers = ["tls", "http"]
-
   [[services.tcp_checks]]
     interval = "15s"
     timeout = "2s"
@@ -27,4 +25,3 @@ primary_region = "yyz"
 [mounts]
   source = "data"
   destination = "/data"
-
