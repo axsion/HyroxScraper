@@ -23,3 +23,8 @@ primary_region = "yyz"
   [[services.tcp_checks]]
     interval = "15s"
     timeout = "2s"
+
+[mounts]
+  source = "data"
+  destination = "/data"
+
