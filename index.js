@@ -1,224 +1,116 @@
 /**
- * HYROX Scraper v3.6 - Fly.io edition
- * -----------------------------------
- * ✅ Uses Playwright base image with Chromium preinstalled
- * ✅ Crawls all events listed in events.txt on GitHub
- * ✅ Outputs aggregated results for SOLO and DOUBLES
- * ✅ Includes endpoints:
- *    - /api/health
- *    - /api/check-events
- *    - /api/scrape-all
- *    - /api/scrape-all?mode=solo
- *    - /api/scrape-all?mode=double
- *    - /api/last-run
+ * HYROX Scraper v3.6 - Fly.io Playwright Edition
+ * -------------------------------------------------------
+ * ✅ Runs on Playwright base image with Chromium preinstalled
+ * ✅ Supports endpoints for health, events, scrape-all, and last-run
+ * ✅ Reads events.txt dynamically from GitHub
  */
 
 import express from "express";
 import fetch from "node-fetch";
-import { chromium } from "playwright";
 import * as cheerio from "cheerio";
+import { chromium } from "playwright";
+import fs from "fs";
 
 const app = express();
 const PORT = process.env.PORT || 10000;
-const EVENTS_URL =
-  "https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt";
+let lastRun = null;
 
-let lastRun = {
-  total: 0,
-  updated: null,
-  events: [],
-};
+// URL to your events list (GitHub raw)
+const EVENTS_URL = "https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt";
 
-// 🧠 Utility: safe delay
-const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+// Helper to fetch and normalize events list
+async function getEventList() {
+  const res = await fetch(EVENTS_URL);
+  const text = await res.text();
+  const urls = text.split("\n").map(u => u.trim()).filter(u => u.length > 0);
+  return urls;
+}
 
-/**
- * 🔹 Health endpoint
- */
-app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", time: new Date().toISOString() });
-});
-
-/**
- * 🔹 Return list of events from GitHub
- */
-app.get("/api/check-events", async (req, res) => {
-  try {
-    const response = await fetch(EVENTS_URL);
-    const text = await response.text();
-    const lines = text
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.startsWith("http"));
-    res.json({ total: lines.length, sample: lines.slice(0, 5) });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/**
- * 🔹 Full scraping route
- */
-app.get("/api/scrape-all", async (req, res) => {
-  const mode = req.query.mode || "all"; // solo | double | all
-  console.log(`🚀 Starting scrape-all (mode=${mode})`);
+// Helper to scrape a single event page
+async function scrapeEvent(url, mode = "all") {
+  console.log(`🔎 Opening ${url}`);
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
 
   try {
-    // Step 1. Fetch event URLs
-    const response = await fetch(EVENTS_URL);
-    const text = await response.text();
-    const eventUrls = text
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.startsWith("http"));
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 90000 });
+    const html = await page.content();
+    const $ = cheerio.load(html);
 
-    console.log(`🧠 Found ${eventUrls.length} events to scrape.`);
-
-    // Step 2. Launch browser
-    const browser = await chromium.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    });
-    const context = await browser.newContext();
-    const page = await context.newPage();
-
+    const eventTitle = $("h2").first().text().trim();
     const results = [];
 
-    // Step 3. Loop through each event
-    for (const url of eventUrls) {
-      console.log(`🔍 Scraping ${url}`);
+    $(".results").each((_, el) => {
+      const category = $(el).find("h3").text().trim();
+      const rows = $(el).find("tbody tr");
 
-      try {
-        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
-        const html = await page.content();
-        const $ = cheerio.load(html);
-
-        // Basic parsing logic
-        const eventName =
-          $("h1").first().text().trim() ||
-          $("title").text().trim() ||
-          "Unknown Event";
-        const cityMatch = eventName.match(/2025\s(.+)/);
-        const city = cityMatch ? cityMatch[1].trim() : eventName;
-        const date = $("div.date").text().trim() || "2025";
-
-        const tables = $("table"); // podium tables
-        if (tables.length === 0) {
-          console.log(`⚠️ No tables found for ${eventName}`);
-          continue;
+      rows.each((i, row) => {
+        const cols = $(row).find("td").map((_, td) => $(td).text().trim()).get();
+        if (cols.length >= 3) {
+          results.push({
+            event: eventTitle,
+            category,
+            position: cols[0],
+            athlete: cols[1],
+            time: cols[2],
+          });
         }
-
-        tables.each((_, table) => {
-          const divTitle =
-            $(table).prev("h2").text().trim() ||
-            $(table).prev("h3").text().trim() ||
-            "";
-
-          const division =
-            divTitle.toUpperCase().includes("DOUBLES") ? "Doubles" : "Solo";
-
-          // Skip if mode filter is active
-          if (mode === "solo" && division === "Doubles") return;
-          if (mode === "double" && division === "Solo") return;
-
-          const ageGroup = divTitle.match(/\d{2}-\d{2}/)
-            ? divTitle.match(/\d{2}-\d{2}/)[0]
-            : "";
-          const gender = /WOMEN|FEMALE|FEMMES|FÉMININ/i.test(divTitle)
-            ? "Women"
-            : /MEN|MALE|HOMMES|MASCULIN/i.test(divTitle)
-            ? "Men"
-            : "";
-
-          const podium = [];
-          $(table)
-            .find("tr")
-            .slice(1, 4)
-            .each((i, tr) => {
-              const tds = $(tr).find("td");
-              const athlete = $(tds[1]).text().trim();
-              const time = $(tds[2]).text().trim();
-              if (athlete && time) {
-                podium.push({
-                  place: i + 1,
-                  athlete,
-                  time,
-                });
-              }
-            });
-
-          if (podium.length > 0) {
-            results.push({
-              event: eventName,
-              city,
-              date,
-              division,
-              age_group: ageGroup,
-              gender,
-              podium,
-              url,
-            });
-            console.log(
-              `✅ Parsed ${podium.length} podiums from ${eventName} (${division})`
-            );
-          }
-        });
-
-        await sleep(500); // be polite
-      } catch (err) {
-        console.log(`❌ Error scraping ${url}:`, err.message);
-      }
-    }
+      });
+    });
 
     await browser.close();
-
-    // Step 4. Update metadata
-    lastRun = {
-      total: results.length,
-      updated: new Date().toISOString(),
-      events: results.map((r) => r.event),
-    };
-
-    console.log(
-      `🏁 Scraping completed: ${results.length} podium groups extracted.`
-    );
-
-    res.json({
-      total: results.length,
-      updated: lastRun.updated,
-      sample: results.slice(0, 3),
-      mode,
-    });
+    return { url, event: eventTitle, count: results.length, results };
   } catch (err) {
-    console.error("❌ scrape-all error:", err);
+    console.error(`❌ Error scraping ${url}: ${err.message}`);
+    await browser.close();
+    return { url, error: err.message };
+  }
+}
+
+// ✅ HEALTH endpoint
+app.get("/api/health", (_, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+// ✅ CHECK EVENTS
+app.get("/api/check-events", async (_, res) => {
+  try {
+    const urls = await getEventList();
+    res.json({ total: urls.length, sample: urls.slice(0, 5) });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-/**
- * 🔹 Last run info
- */
-app.get("/api/last-run", (req, res) => {
+// ✅ SCRAPE ALL
+app.get("/api/scrape-all", async (req, res) => {
+  const mode = req.query.mode || "all";
+  const urls = await getEventList();
+
+  console.log(`🧠 Starting scrape-all in mode: ${mode}`);
+  const start = Date.now();
+  const allResults = [];
+
+  for (const url of urls) {
+    const result = await scrapeEvent(url, mode);
+    if (result.results) allResults.push(...result.results);
+  }
+
+  const duration = ((Date.now() - start) / 1000).toFixed(1);
+  lastRun = { total: allResults.length, updated: new Date().toISOString() };
+
+  console.log(`🏁 Scrape complete: ${allResults.length} results in ${duration}s`);
   res.json(lastRun);
 });
 
-/**
- * 🔹 Root endpoint (summary)
- */
-app.get("/", (req, res) => {
-  res.send(`
-    <h2>HYROX Scraper v3.6 (Fly.io)</h2>
-    <ul>
-      <li>/api/health</li>
-      <li>/api/check-events</li>
-      <li>/api/scrape-all</li>
-      <li>/api/scrape-all?mode=solo</li>
-      <li>/api/scrape-all?mode=double</li>
-      <li>/api/last-run</li>
-    </ul>
-  `);
+// ✅ LAST RUN
+app.get("/api/last-run", (_, res) => {
+  if (!lastRun) return res.json({ status: "no runs yet" });
+  res.json(lastRun);
 });
 
+// ✅ KEEP SERVER ALIVE
 app.listen(PORT, () => {
   console.log(`✅ HYROX Scraper running on port ${PORT}`);
 });
