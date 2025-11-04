@@ -5,7 +5,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=10000
 
-# Chromium runtime deps
+# Install Chromium dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 libxss1 libasound2 fonts-liberation libatk-bridge2.0-0 \
     libgtk-3-0 libx11-xcb1 libxcomposite1 libxrandr2 libxdamage1 \
