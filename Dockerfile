@@ -2,7 +2,7 @@
 # HYROX Scraper – Fly.io deployment (Playwright 1.56.1)
 # ----------------------------------------------------------
 
-FROM mcr.microsoft.com/playwright:v1.56.1-jammy   # ← updated tag
+FROM mcr.microsoft.com/playwright:v1.56.1-jammy
 
 WORKDIR /app
 
