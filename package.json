@@ -1,25 +1,22 @@
 {
-  "name": "hyrox-scraper",
+  "name": "hyroxscraper",
   "version": "3.6.0",
-  "description": "HYROX event scraper running on Fly.io (Playwright + Express + Cheerio)",
-  "type": "module",
+  "description": "HYROX Results Scraper (Fly.io compatible, Playwright-based)",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "scrape-all": "curl http://localhost:10000/api/scrape-all"
   },
   "dependencies": {
-    "express": "^4.19.2",
+    "cheerio": "^1.0.0-rc.12",
+    "express": "^4.18.2",
     "node-fetch": "^3.3.2",
-    "playwright": "^1.49.0",
-    "cheerio": "^1.0.0-rc.12"
-  },
-  "devDependencies": {
-    "nodemon": "^3.1.4"
+    "playwright": "^1.49.0"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=18"
   },
-  "author": "Axsion",
+  "author": "axsion",
   "license": "MIT"
 }
