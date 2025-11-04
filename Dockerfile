@@ -1,18 +1,24 @@
-# syntax = docker/dockerfile:1
+# ==========================================================
+# HYROX Scraper - Fly.io Compatible Dockerfile
+# Includes Playwright Chromium inside the build image
+# ==========================================================
 
-# ✅ Playwright image — includes Chromium, Firefox, WebKit, and all dependencies
-FROM mcr.microsoft.com/playwright:v1.49.0-jammy
+# Use official Playwright base image (includes browsers)
+FROM mcr.microsoft.com/playwright:v1.45.0-jammy
 
+# Set working directory
 WORKDIR /app
-ENV NODE_ENV=production
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-ENV PORT=10000
 
+# Copy package files and install dependencies
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 
+# Copy the rest of the app
 COPY . .
 
+# Expose Fly.io's expected port
+ENV PORT=10000
 EXPOSE 10000
-CMD ["node","index.js"]
 
+# Run the scraper server
+CMD ["node", "index.js"]
