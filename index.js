@@ -140,10 +140,19 @@ async function runCrawl(allUrls, force = false) {
   log(`🚀 Starting crawl – total:${allUrls.length} resume:${results.length} queue:${queue.length} concurrency:${concurrency}`);
 
   browser = await chromium.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-dev-shm-usage", "--single-process"],
-    executablePath: "/usr/bin/chromium",
-  });
+  headless: true,
+  executablePath: "/ms-playwright/chromium-1194/chrome-linux/chrome",
+  args: [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--single-process",
+    "--disable-gpu",
+    "--disable-background-networking",
+    "--disable-software-rasterizer",
+  ],
+});
+log("🎬 Chromium launched successfully inside runCrawl()");
+
 
   const workers = [];
   for (let i = 0; i < concurrency; i++) {
