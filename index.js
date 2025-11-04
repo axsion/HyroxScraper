@@ -125,6 +125,10 @@ app.get("/api/last-run", (req, res) => {
   res.json(data);
 });
 
+app.get("/", (req, res) => {
+  res.send("✅ HYROX Scraper is running! Use /api/scrape or /api/scrape-all");
+});
+
 // 🟢 Start server on Fly.io
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ HYROX Scraper running on 0.0.0.0:${PORT}`);
