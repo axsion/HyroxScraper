@@ -1,52 +1,24 @@
-# fly.toml configuration for HYROX Scraper
-# ----------------------------------------
-# ✅ Compatible with Node.js + Playwright + Express
-# ✅ Listens on port 10000 (Fly proxy-compatible)
-# ✅ Includes persistent /data volume for saved files
-# ✅ Ready to deploy on Free Tier or Production
-
-app = "hyroxscraper"          # Your Fly.io app name
-primary_region = "yyz"        # Closest region (Toronto)
-kill_signal = "SIGINT"
-kill_timeout = "5s"
-
-[build]
-  # Fly auto-detects Dockerfile or uses builder if present
+app = "hyroxscraper"
+primary_region = "yyz"
 
 [env]
   PORT = "10000"
   NODE_ENV = "production"
 
+[build]
+  image = "mcr.microsoft.com/playwright:v1.56.1-jammy"
+
 [[services]]
-  internal_port = 10000
   protocol = "tcp"
-
-  [services.concurrency]
-    type = "connections"
-    soft_limit = 20
-    hard_limit = 25
-
+  internal_port = 10000
   [[services.ports]]
     port = 80
     handlers = ["http"]
-
   [[services.ports]]
     port = 443
     handlers = ["tls", "http"]
 
-  [[services.tcp_checks]]
-    interval = "15s"
-    timeout = "2s"
-    grace_period = "5s"
-    restart_limit = 0
-
-# 🔒 Volume Mount (persistent data)
+# ✅ Persistent volume for last-run data
 [mounts]
-  source = "hyroxscraper_data"     # Volume name (you will create this)
-  destination = "/data"            # Folder path inside container
-
-# 🧠 Virtual Machine configuration
-[[vm]]
-  memory = "512mb"                 # Minimum RAM for Playwright
-  cpu_kind = "shared"
-  cpus = 1
+  source = "data"
+  destination = "/data"
