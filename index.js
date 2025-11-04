@@ -1,9 +1,8 @@
 /**
- * HYROX Scraper v3.5 – Fly.io Compatible
- * --------------------------------------
- * ✅ Works with Fly.io (listens on 0.0.0.0:10000)
- * ✅ Compatible with Render/Node 18+
- * ✅ Chromium path baked in via .playwright
+ * HYROX Scraper v3.6 – Fly.io / Render Compatible
+ * ------------------------------------------------
+ * ✅ Uses Playwright (not -core) with baked-in Chromium
+ * ✅ Works on Fly.io & Render with Node 18+
  * ✅ Endpoints:
  *    - /api/health
  *    - /api/check-events
@@ -15,7 +14,7 @@
 import express from "express";
 import fetch from "node-fetch";
 import * as cheerio from "cheerio";
-import { chromium } from "playwright-core";
+import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -24,26 +23,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 10000;
 const app = express();
 
-// 🧠 Load the Chromium binary (baked into .playwright)
-const CHROMIUM_PATH = path.join(
-  __dirname,
-  ".playwright",
-  "chromium-1194",
-  "chrome-linux",
-  "chrome"
-);
-
-// 🗂️ Paths
-const EVENTS_URL =
-  "https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt";
+// 🌍 External events list (dynamic from GitHub)
+const EVENTS_URL = "https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt";
 const LAST_RUN_FILE = path.join(__dirname, "last-run.json");
 
-// 🩺 Health check endpoint
+// 🩺 Health check
 app.get("/api/health", (req, res) => {
   res.status(200).json({ status: "ok", message: "HYROX Scraper is alive" });
 });
 
-// 🧩 Check events list
+// 🧾 Check events file
 app.get("/api/check-events", async (req, res) => {
   try {
     const data = await fetch(EVENTS_URL);
@@ -58,27 +47,38 @@ app.get("/api/check-events", async (req, res) => {
   }
 });
 
-// 🕸️ Scrape a single HYROX event page
+// 🕷️ Scrape a single HYROX event page
 app.get("/api/scrape", async (req, res) => {
   const { url } = req.query;
   if (!url) return res.status(400).json({ error: "Missing ?url parameter" });
 
+  console.log(`🔎 Opening ${url}`);
+  let browser;
+
   try {
-const browser = await chromium.launch({
-  headless: true,
-  args: ["--no-sandbox", "--disable-setuid-sandbox"],
-});
+    browser = await chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
+
     const page = await browser.newPage();
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
     const html = await page.content();
     const $ = cheerio.load(html);
 
-    // Simplified scrape example
-    const title = $("title").text();
+    // Example scrape
+    const title = $("title").text().trim();
+    const categories = [];
+    $("table").each((i, el) => {
+      const caption = $(el).prev("h2, h3").text().trim();
+      if (caption) categories.push(caption);
+    });
+
     await browser.close();
 
-    res.json({ success: true, title });
+    res.json({ success: true, url, title, categories });
   } catch (error) {
+    if (browser) await browser.close();
     res.status(500).json({ error: error.message });
   }
 });
@@ -95,17 +95,19 @@ app.get("/api/scrape-all", async (req, res) => {
 
     const results = [];
     for (const url of urls) {
+      console.log(`🌍 Scraping ${url}`);
       try {
-        const result = await fetch(
+        const r = await fetch(
           `${req.protocol}://${req.get("host")}/api/scrape?url=${encodeURIComponent(url)}`
-        ).then((r) => r.json());
-        results.push({ url, ...result });
+        );
+        const data = await r.json();
+        results.push(data);
       } catch (e) {
         results.push({ url, error: e.message });
       }
     }
 
-    // Save last run data
+    // Save metadata
     fs.writeFileSync(
       LAST_RUN_FILE,
       JSON.stringify({ date: new Date().toISOString(), total: results.length }, null, 2)
@@ -119,17 +121,19 @@ app.get("/api/scrape-all", async (req, res) => {
 
 // 🕓 Last run info
 app.get("/api/last-run", (req, res) => {
-  if (!fs.existsSync(LAST_RUN_FILE))
+  if (!fs.existsSync(LAST_RUN_FILE)) {
     return res.status(404).json({ error: "No last-run data found" });
+  }
   const data = JSON.parse(fs.readFileSync(LAST_RUN_FILE, "utf8"));
   res.json(data);
 });
 
+// 🏠 Root route
 app.get("/", (req, res) => {
-  res.send("✅ HYROX Scraper is running! Use /api/scrape or /api/scrape-all");
+  res.send("✅ HYROX Scraper is running! Try /api/scrape or /api/scrape-all");
 });
 
-// 🟢 Start server on Fly.io
+// 🚀 Start server
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ HYROX Scraper running on 0.0.0.0:${PORT}`);
+  console.log(`✅ HYROX Scraper running on port ${PORT}`);
 });
