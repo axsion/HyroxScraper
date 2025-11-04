@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1
-FROM node:18-slim
+FROM node:20-slim
 
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=10000
 
-# Install Chromium dependencies
+# Chromium dependencies for Playwright
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 libxss1 libasound2 fonts-liberation libatk-bridge2.0-0 \
     libgtk-3-0 libx11-xcb1 libxcomposite1 libxrandr2 libxdamage1 \
