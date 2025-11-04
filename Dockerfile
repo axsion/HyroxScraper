@@ -1,17 +1,14 @@
 # ----------------------------------------------------------
-# HYROX Scraper – Fly.io deployment
-# Includes Chromium, Firefox, and WebKit out of the box
+# HYROX Scraper – Fly.io deployment (Playwright 1.56.1)
 # ----------------------------------------------------------
 
-FROM mcr.microsoft.com/playwright:v1.45.0-jammy
+FROM mcr.microsoft.com/playwright:v1.56.1-jammy   # ← updated tag
 
 WORKDIR /app
 
-# Copy and install dependencies
 COPY package*.json ./
 RUN npm ci --omit=dev || npm install --omit=dev
 
-# Copy app source
 COPY . .
 
 ENV PORT=10000
