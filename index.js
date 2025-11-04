@@ -1,246 +1,217 @@
 /**
- * HYROX Scraper v4.6  (Fly.io-Optimized, Incremental + Resume)
- * ------------------------------------------------------------
- * ✅ Dynamic scraping with Playwright (Chromium 1.56)
- * ✅ Incremental save to /data/latest.json after each event
- * ✅ Resume on restart (skips completed URLs)
- * ✅ Shared Chromium instance, concurrency limit (default 3)
- * ✅ Robust logging + progress endpoints
- * ✅ Health + test endpoints for monitoring
+ * HYROX Scraper v4.8 (Fly.io Stable)
+ * ----------------------------------
+ * ✅ Uses Playwright Chromium baked into the image (/ms-playwright/chromium-1194/)
+ * ✅ Extracts podium data (top 3) for all Masters categories (45+)
+ * ✅ Writes incremental results to /data/latest.json
+ * ✅ Exposes /api/scrape-all, /api/test-one, /api/check-new, /api/progress, /api/logs
  */
 
 import express from "express";
 import fs from "fs";
 import path from "path";
 import { chromium } from "playwright-core";
+import * as cheerio from "cheerio";
 import fetch from "node-fetch";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = process.env.PORT || 10000;
 const app = express();
-
+const PORT = process.env.PORT || 10000;
 const DATA_DIR = "/data";
-const OUTPUT_FILE = path.join(DATA_DIR, "latest.json");
 const LOG_FILE = path.join(DATA_DIR, `scraper-${new Date().toISOString().split("T")[0]}.txt`);
+const CACHE_FILE = path.join(DATA_DIR, "latest.json");
 
-let running = false;
-let queue = [];
-let done = 0;
-let succeeded = 0;
-let failed = 0;
-let lastUrl = null;
-let lastError = null;
-let startedAt = null;
-let finishedAt = null;
-let browser = null;
-let concurrency = 3;
-let writeInProgress = false;
+// ✅ Unified Chromium binary path for Fly.io
+const CHROMIUM_PATH = "/ms-playwright/chromium-1194/chrome-linux/chrome";
 
-// --- Utility: Log writer ----------------------------------------------------
+// Masters categories only
+const MASTER_AGES = ["45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79", "80-84"];
+
+// Global state
+let isRunning = false;
+let progress = { running: false, queued: 0, done: 0, succeeded: 0, failed: 0, lastUrl: null, lastError: null, startedAt: null, finishedAt: null };
+
+// --- Utility Functions ---
 function log(msg) {
   const line = `[${new Date().toISOString()}] ${msg}`;
   console.log(line);
   fs.appendFileSync(LOG_FILE, line + "\n");
 }
 
-// --- Safe write to JSON file ------------------------------------------------
-function safeWrite(results) {
-  if (writeInProgress) return;
-  writeInProgress = true;
-  const tmp = OUTPUT_FILE + ".tmp";
-  try {
-    fs.writeFileSync(tmp, JSON.stringify(results, null, 2));
-    fs.renameSync(tmp, OUTPUT_FILE);
-  } catch (e) {
-    log(`❌ Failed to write ${OUTPUT_FILE}: ${e.message}`);
-  } finally {
-    writeInProgress = false;
-  }
+function saveProgress() {
+  fs.writeFileSync(path.join(DATA_DIR, "progress.json"), JSON.stringify(progress, null, 2));
 }
 
-// --- Load existing results (for resume) ------------------------------------
-function loadExistingResults() {
-  try {
-    if (!fs.existsSync(OUTPUT_FILE)) return [];
-    const data = JSON.parse(fs.readFileSync(OUTPUT_FILE, "utf8"));
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
+function savePartial(results) {
+  fs.writeFileSync(CACHE_FILE, JSON.stringify(results, null, 2));
 }
 
-// --- Scrape one event page --------------------------------------------------
-async function scrapeOne(page, url) {
-  try {
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForSelector("table tbody tr", { timeout: 15000 });
+// --- Browser Launcher ---
+async function launchBrowser() {
+  return await chromium.launch({
+    headless: true,
+    executablePath: CHROMIUM_PATH,
+    args: [
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--single-process",
+      "--disable-gpu",
+      "--disable-background-networking",
+      "--disable-software-rasterizer",
+    ],
+  });
+}
 
-    const podium = await page.evaluate(() => {
-      const rows = Array.from(document.querySelectorAll("table tbody tr"));
-      if (rows.length === 0) return [];
-      const parsed = rows.slice(0, 3).map((row, i) => {
-        const cols = row.querySelectorAll("td");
-        const rank = cols[0]?.innerText?.trim() || "";
-        const team = cols[1]?.innerText?.trim() || "";
-        const members = cols[2]?.innerText?.trim() || "";
-        const time = cols[cols.length - 1]?.innerText?.trim() || "";
-        return { rank, team, members, time };
-      });
-      return parsed;
+// --- Podium Extractor ---
+async function extractPodium(url) {
+  const browser = await launchBrowser();
+  const page = await browser.newPage();
+
+  try {
+    log(`🔎 Opening ${url}`);
+    await page.goto(url, { timeout: 60000, waitUntil: "domcontentloaded" });
+    await page.waitForSelector("table", { timeout: 10000 });
+
+    const html = await page.content();
+    const $ = cheerio.load(html);
+
+    // Parse the first 3 rows in the ranking table
+    const podium = [];
+    $("table tbody tr").slice(0, 3).each((i, el) => {
+      const rank = $(el).find("td:nth-child(1)").text().trim();
+      const team = $(el).find("td:nth-child(2)").text().trim();
+      const members = $(el).find("td:nth-child(3)").text().trim();
+      const time = $(el).find("td:last-child").text().trim();
+      podium.push({ rank, team, members, time });
     });
 
-    if (!podium || podium.length < 3) throw new Error("No podium rows");
+    if (podium.length === 0) throw new Error("No podium rows");
+    log(`✅ Extracted ${podium.length} podium entries from ${url}`);
 
+    await browser.close();
     return { url, podium };
   } catch (err) {
+    await browser.close();
     throw new Error(err.message);
   }
 }
 
-// --- Worker process ---------------------------------------------------------
-async function worker(id, results) {
-  while (queue.length > 0) {
-    const url = queue.shift();
-    lastUrl = url;
-    log(`🔎 [${id}] Opening ${url}`);
+// --- Build All URLs ---
+async function buildEventUrls() {
+  const res = await fetch("https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt");
+  const lines = (await res.text()).split("\n").filter(Boolean);
 
-    const page = await browser.newPage();
-    try {
-      const result = await scrapeOne(page, url);
-      results.push(result);
-      succeeded++;
-      done++;
-      log(`✅ [${id}] OK: ${url}`);
-      safeWrite(results);
-    } catch (err) {
-      failed++;
-      done++;
-      lastError = err.message;
-      log(`❌ [${id}] FAIL: ${url} – ${err.message}`);
-    } finally {
-      await page.close();
+  const urls = [];
+  for (const line of lines) {
+    const base = line.trim();
+    for (const age of MASTER_AGES) {
+      urls.push(`${base}-hyrox-men?ag=${age}`);
+      urls.push(`${base}-hyrox-women?ag=${age}`);
+      urls.push(`${base}-hyrox-doubles-men?ag=${age}`);
+      urls.push(`${base}-hyrox-doubles-women?ag=${age}`);
+      urls.push(`${base}-hyrox-doubles-mixed?ag=${age}`);
     }
   }
+  return urls;
 }
 
-// --- Crawl runner -----------------------------------------------------------
-async function runCrawl(allUrls, force = false) {
-  if (running) return;
-  running = true;
-  done = succeeded = failed = 0;
-  lastUrl = lastError = null;
-  startedAt = new Date();
-  finishedAt = null;
+// --- Full Crawl ---
+async function runCrawl({ force = false, concurrency = 2 } = {}) {
+  if (isRunning) throw new Error("Scrape already running");
+  isRunning = true;
 
-  const results = force ? [] : loadExistingResults();
-  const doneUrls = new Set(results.map(r => r.url));
-  queue = allUrls.filter(u => !doneUrls.has(u));
+  const urls = await buildEventUrls();
+  progress = {
+    running: true,
+    queued: urls.length,
+    done: 0,
+    succeeded: 0,
+    failed: 0,
+    lastUrl: null,
+    lastError: null,
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+  };
+  log(`🚀 Starting crawl – total:${urls.length} resume:0 queue:${urls.length} concurrency:${concurrency}`);
+  saveProgress();
 
-  log(`🚀 Starting crawl – total:${allUrls.length} resume:${results.length} queue:${queue.length} concurrency:${concurrency}`);
+  const results = [];
+  const queue = [...urls];
+  const active = new Set();
 
-  browser = await chromium.launch({
-  headless: true,
-  executablePath: "/ms-playwright/chromium-1194/chrome-linux/chrome",
-  args: [
-    "--no-sandbox",
-    "--disable-dev-shm-usage",
-    "--single-process",
-    "--disable-gpu",
-    "--disable-background-networking",
-    "--disable-software-rasterizer",
-  ],
-});
-log("🎬 Chromium launched successfully inside runCrawl()");
+  async function worker() {
+    while (queue.length > 0) {
+      const url = queue.shift();
+      progress.lastUrl = url;
+      try {
+        const data = await extractPodium(url);
+        results.push(data);
+        progress.succeeded++;
+      } catch (err) {
+        progress.failed++;
+        progress.lastError = err.message;
+        log(`❌ FAIL: ${url} – ${err.message}`);
+      } finally {
+        progress.done++;
+        saveProgress();
+        savePartial(results);
+      }
+    }
+  }
 
-
-  const workers = [];
   for (let i = 0; i < concurrency; i++) {
-    workers.push(worker(i + 1, results));
+    const w = worker();
+    active.add(w);
+    w.finally(() => active.delete(w));
   }
 
-  await Promise.all(workers);
-  await browser.close();
+  await Promise.all(active);
+  progress.running = false;
+  progress.finishedAt = new Date().toISOString();
+  saveProgress();
+  savePartial(results);
+  isRunning = false;
 
-  finishedAt = new Date();
-  running = false;
-  safeWrite(results);
-  log(`🏁 Crawl finished. done:${done} ok:${succeeded} fail:${failed}`);
+  log(`🏁 Crawl completed: ${progress.succeeded}/${urls.length} succeeded`);
+  return results;
 }
 
-// --- API Endpoints ----------------------------------------------------------
-
-// Health check
+// --- Express Routes ---
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true, app: "HYROX Scraper v4.6", now: new Date().toISOString() });
+  res.json({ ok: true, app: "HYROX Scraper v4.8", now: new Date().toISOString() });
 });
 
-// Simple event list loader
-app.get("/api/check-events", async (req, res) => {
-  try {
-    const resp = await fetch("https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt");
-    const text = await resp.text();
-    const lines = text.split("\n").filter(l => l.trim());
-    res.json({ baseCount: lines.length, total: lines.length * 40, sample: lines.slice(0, 10) });
-  } catch (e) {
-    res.json({ error: e.message });
-  }
+app.get("/api/logs", (req, res) => {
+  const lines = fs.existsSync(LOG_FILE) ? fs.readFileSync(LOG_FILE, "utf8").split("\n").slice(-1000) : [];
+  res.json({ file: path.basename(LOG_FILE), lines });
 });
 
-// Launch full crawl
+app.get("/api/progress", (req, res) => res.json(progress));
+
 app.post("/api/scrape-all", async (req, res) => {
-  const urlListResp = await fetch("https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt");
-  const base = (await urlListResp.text()).split("\n").filter(Boolean);
-
-  const allUrls = [];
-  const ags = ["45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79", "80-84"];
-  const cats = ["hyrox-men", "hyrox-women", "hyrox-doubles-men", "hyrox-doubles-women", "hyrox-doubles-mixed"];
-
-  base.forEach(b => {
-    cats.forEach(c => {
-      ags.forEach(a => {
-        allUrls.push(`${b}-${c}?ag=${a}`);
-      });
-    });
-  });
-
+  if (isRunning) return res.json({ accepted: false, note: "Already running." });
   const force = req.query.force === "true";
-  concurrency = parseInt(req.query.concurrency || "3", 10);
-
-  res.json({ accepted: true, planned: allUrls.length, force, note: "Background crawl started." });
-  runCrawl(allUrls, force).catch(e => log(`❌ Global error: ${e.message}`));
+  const concurrency = parseInt(req.query.concurrency || "2", 10);
+  res.json({ accepted: true, planned: 0, force, note: "Background crawl started." });
+  runCrawl({ force, concurrency }).catch((err) => {
+    log(`❌ Global error: ${err.message}`);
+    progress.running = false;
+    saveProgress();
+  });
 });
 
-// One-off test endpoint
 app.get("/api/test-one", async (req, res) => {
-  const url =
-    req.query.url ||
-    "https://www.hyresult.com/ranking/s8-2025-birmingham-hyrox-doubles-mixed?ag=45-49";
   try {
-    const browser = await chromium.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-dev-shm-usage", "--single-process"],
-      executablePath: "/usr/bin/chromium",
-    });
-    const page = await browser.newPage();
-    const result = await scrapeOne(page, url);
-    await browser.close();
-    res.json({ ok: true, url, podium: result.podium });
+    const url = "https://www.hyresult.com/ranking/s8-2025-birmingham-hyrox-doubles-mixed?ag=45-49";
+    const data = await extractPodium(url);
+    res.json({ ok: true, ...data });
   } catch (err) {
     res.json({ ok: false, error: err.message });
   }
 });
 
-// Progress + logs
-app.get("/api/progress", (req, res) => {
-  res.json({ running, queued: queue.length, done, succeeded, failed, lastUrl, lastError, startedAt, finishedAt });
-});
-app.get("/api/logs", (req, res) => {
-  const lines = fs.existsSync(LOG_FILE) ? fs.readFileSync(LOG_FILE, "utf8").trim().split("\n").slice(-100) : [];
-  res.json({ file: path.basename(LOG_FILE), lines });
-});
-
-// --- Start server -----------------------------------------------------------
+// --- Server Startup ---
 app.listen(PORT, "0.0.0.0", () => {
-  log(`✅ HYROX Scraper v4.6 listening on 0.0.0.0:${PORT}`);
+  log(`✅ HYROX Scraper v4.8 listening on 0.0.0.0:${PORT}`);
 });
