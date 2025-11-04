@@ -1,29 +1,38 @@
-# ------------------------------------------
-# HYROX SCRAPER v4.4 — Fly.io Playwright Build (v1.56.1)
-# ------------------------------------------
+# ==========================================================
+# HYROX Scraper v4.6 - Fly.io Optimized Dockerfile
+# ==========================================================
+# ✅ Node 20 LTS with system tools
+# ✅ Playwright 1.56.1 + Chromium baked in
+# ✅ Runs on port 10000 (Fly proxy compatible)
+# ✅ Fast startup, stable memory footprint
+# ==========================================================
 
-# Use the official Playwright base image that already includes Chromium 119
 FROM mcr.microsoft.com/playwright:v1.56.1-jammy
 
-# Set working directory
+# --- Create working directory ---
 WORKDIR /app
 
-# Copy dependency files
+# --- Copy package files first for caching ---
 COPY package*.json ./
 
-# Install Node dependencies (without dev)
+# --- Install dependencies (omit dev) ---
 RUN npm install --omit=dev
 
-# Copy the app source
+# --- Copy project files ---
 COPY . .
 
-# Environment variables for port & chromium path
-ENV PORT=10000
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-ENV CHROMIUM_PATH=/ms-playwright/chromium-1194/chrome-linux/chrome
+# --- Ensure data directory exists ---
+RUN mkdir -p /data
 
-# Expose app port for Fly.io
+# --- Bake Chromium binary path for Playwright-core ---
+ENV CHROMIUM_PATH="/usr/bin/chromium"
+
+# --- Environment settings ---
+ENV NODE_ENV=production
+ENV PORT=10000
+
+# --- Expose app port ---
 EXPOSE 10000
 
-# Launch the scraper
+# --- Start the server ---
 CMD ["node", "index.js"]
