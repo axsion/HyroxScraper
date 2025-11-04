@@ -1,12 +1,12 @@
 {
   "name": "hyroxscraper",
-  "version": "3.6.1",
-  "description": "HYROX Results Scraper (Fly.io compatible, Playwright 1.56.1)",
+  "version": "3.8.0",
+  "description": "HYROX results scraper (Fly.io, Masters-only, incremental)",
   "main": "index.js",
   "type": "module",
   "scripts": {
     "start": "node index.js",
-    "scrape-all": "curl http://localhost:10000/api/scrape-all"
+    "dev": "NODE_ENV=development node index.js"
   },
   "dependencies": {
     "cheerio": "^1.0.0-rc.12",
