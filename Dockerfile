@@ -1,19 +1,29 @@
-# syntax = docker/dockerfile:1
-FROM mcr.microsoft.com/playwright:v1.56.1-jammy
+# ==========================================================
+#  HYROX SCRAPER - Playwright + Node 18 + Fly.io compatible
+# ==========================================================
+# Uses the official Playwright base image with Chromium 1.56 preinstalled.
+FROM mcr.microsoft.com/playwright:v1.56.0-jammy
 
+# Set working directory
 WORKDIR /app
 
-# copy and install dependencies
+# Copy package files and install dependencies
 COPY package*.json ./
 RUN npm install --omit=dev
 
-# copy all code (including events.txt)
+# Copy the entire project (including index.js, events.txt, etc.)
 COPY . .
 
-# environment
-ENV NODE_ENV=production
-ENV PORT=10000
+# Expose the correct Fly.io port
 EXPOSE 10000
 
-# fly.io expects app to listen on 0.0.0.0:$PORT
+# Define environment variables for consistent behavior
+ENV NODE_ENV=production
+ENV PORT=10000
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+# Verify Chromium path (this will exist inside this image)
+RUN ls -l /ms-playwright/chromium-*/chrome-linux/chrome
+
+# Start the app
 CMD ["node", "index.js"]
