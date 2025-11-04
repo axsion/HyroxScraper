@@ -1,23 +1,24 @@
-# fly.toml app configuration file for Fly.io
-# ------------------------------------------
-# This file tells Fly.io how to build, deploy, and route traffic to your app.
-# It ensures the proxy connects correctly to port 10000 inside your container.
+# fly.toml configuration for HYROX Scraper
+# ----------------------------------------
+# ✅ Compatible with Node.js + Playwright + Express
+# ✅ Listens on port 10000 (Fly proxy-compatible)
+# ✅ Includes persistent /data volume for saved files
+# ✅ Ready to deploy on Free Tier or Production
 
-app = "hyroxscraper"          # <- must match your Fly app name
-primary_region = "yyz"        # <- change if you prefer another region (e.g. iad, fra, etc.)
+app = "hyroxscraper"          # Your Fly.io app name
+primary_region = "yyz"        # Closest region (Toronto)
 kill_signal = "SIGINT"
 kill_timeout = "5s"
 
 [build]
-  # Auto-detects Dockerfile in your project root
-  # If you use a custom Dockerfile, Fly will use it automatically.
+  # Fly auto-detects Dockerfile or uses builder if present
 
 [env]
   PORT = "10000"
   NODE_ENV = "production"
 
 [[services]]
-  internal_port = 10000       # MUST match your app.listen() port
+  internal_port = 10000
   protocol = "tcp"
 
   [services.concurrency]
@@ -39,7 +40,13 @@ kill_timeout = "5s"
     grace_period = "5s"
     restart_limit = 0
 
+# 🔒 Volume Mount (persistent data)
+[mounts]
+  source = "hyroxscraper_data"     # Volume name (you will create this)
+  destination = "/data"            # Folder path inside container
+
+# 🧠 Virtual Machine configuration
 [[vm]]
-  memory = "512mb"
+  memory = "512mb"                 # Minimum RAM for Playwright
   cpu_kind = "shared"
   cpus = 1
