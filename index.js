@@ -1,147 +1,130 @@
 /**
- * HYROX Scraper v4.4 — Fly.io Stable
- * -----------------------------------
- * ✅ Express server with /api/test-one (single event tester)
- * ✅ Playwright (Chromium) dynamic rendering support
- * ✅ Waits for DOM-rendered tables (not static HTML)
- * ✅ Compatible with Render/Fly.io ephemeral environments
+ * HYROX Scraper v4.5 - Fly.io Stable Release
+ * ------------------------------------------
+ * ✅ Fully compatible with Playwright 1.56.1
+ * ✅ Uses dynamic Chromium path (works on Fly.io or local)
+ * ✅ Correctly extracts podiums using page.evaluate after full load
+ * ✅ Includes /api/test-one, /api/health, /api/scrape-all endpoints
  */
 
 import express from "express";
-import fetch from "node-fetch";
+import * as cheerio from "cheerio";
 import { chromium } from "playwright-core";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
+// ------------------ Basic Setup ------------------
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 10000;
 const app = express();
 
-// Optional: persistent cache (if /data exists)
-const DATA_DIR = fs.existsSync("/data") ? "/data" : path.join(__dirname, "data");
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+app.use(express.json());
 
-// Canonical HYROX events list
-const EVENTS_URL =
-  "https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt";
-const EVENTS_CACHE_FILE = path.join(DATA_DIR, "events-cache.txt");
+// Dynamic Chromium binary detection
+const CHROMIUM_PATH =
+  process.env.CHROMIUM_PATH ||
+  "/ms-playwright/chromium-1194/chrome-linux/chrome";
 
-// -------------------------
-// 🩺 Health check
-// -------------------------
-app.get("/api/health", (req, res) =>
-  res.json({ ok: true, app: "HYROX Scraper v4.4", now: new Date().toISOString() })
-);
-
-// -------------------------
-// 📋 Check events list
-// -------------------------
-app.get("/api/check-events", async (req, res) => {
+// ------------------ Logger Helper ------------------
+const logFile = path.join("/data", `scraper-${new Date().toISOString().slice(0, 10)}.txt`);
+function log(msg) {
+  const line = `[${new Date().toISOString()}] ${msg}`;
+  console.log(line);
   try {
-    let urls = [];
+    fs.appendFileSync(logFile, line + "\n");
+  } catch {}
+}
 
-    if (req.query.refresh === "true" || !fs.existsSync(EVENTS_CACHE_FILE)) {
-      console.log("🔁 Refreshing events from GitHub...");
-      const resp = await fetch(EVENTS_URL);
-      if (!resp.ok) throw new Error(`Failed to fetch events list: ${resp.status}`);
-      const text = await resp.text();
-      fs.writeFileSync(EVENTS_CACHE_FILE, text);
-      urls = text.split("\n").filter(Boolean);
-    } else {
-      const cached = fs.readFileSync(EVENTS_CACHE_FILE, "utf-8");
-      urls = cached.split("\n").filter(Boolean);
-    }
+// ------------------ Utils ------------------
+async function delay(ms) {
+  return new Promise((res) => setTimeout(res, ms));
+}
 
-    res.json({ baseCount: urls.length, sample: urls.slice(0, 10) });
-  } catch (err) {
-    console.error("❌ Error loading events:", err);
-    res.status(500).json({ error: err.message });
-  }
+async function launchBrowser() {
+  log(`🚀 Launching Chromium at ${CHROMIUM_PATH}`);
+  return await chromium.launch({
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    headless: true,
+    executablePath: CHROMIUM_PATH,
+  });
+}
+
+// ------------------ Podium Extraction ------------------
+async function extractPodium(url) {
+  const browser = await launchBrowser();
+  const page = await browser.newPage();
+
+  log(`🔎 Opening ${url}`);
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+
+  // Wait for the results table to render
+  await page.waitForSelector("table tbody tr", { timeout: 60000 });
+
+  // Evaluate DOM after Vue/React render
+  const podium = await page.evaluate(() => {
+    const rows = Array.from(document.querySelectorAll("table tbody tr")).slice(0, 3);
+    return rows.map((r) => {
+      const cells = Array.from(r.querySelectorAll("td"))
+        .map((td) => td.innerText.trim())
+        .filter((txt) => txt && txt.toLowerCase() !== "analyze"); // remove junk buttons
+
+      // Most result tables are like [rank, name/team, time]
+      return {
+        rank: cells[0] || "",
+        team: cells[1] || "",
+        members: cells[2] || "",
+        time: cells[cells.length - 1] || "",
+      };
+    });
+  });
+
+  await browser.close();
+  log(`✅ Extracted ${podium.length} podium entries from ${url}`);
+  return podium;
+}
+
+// ------------------ API Routes ------------------
+
+// Health check
+app.get("/api/health", (req, res) => {
+  res.json({ ok: true, app: "HYROX Scraper v4.5", now: new Date().toISOString() });
 });
 
-// -------------------------
-// 🧪 TEST ONE URL (single event podium extractor)
-// -------------------------
+// Test one URL
 app.get("/api/test-one", async (req, res) => {
-  const url =
-    req.query.url ||
+  const testUrl =
     "https://www.hyresult.com/ranking/s8-2025-birmingham-hyrox-doubles-mixed?ag=45-49";
-
-  console.log(`🎯 Testing single HYROX event:\n${url}`);
-
-  let browser;
   try {
-    browser = await chromium.launch({
-      headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--single-process"
-      ],
-      // Adjust path as needed if you ship Chromium in Docker
-      executablePath:
-        process.env.CHROMIUM_PATH ||
-        "/usr/bin/chromium" ||
-        "/usr/bin/chromium-browser" ||
-        "/usr/bin/google-chrome"
-    });
-
-    const page = await browser.newPage();
-    await page.goto(url, { waitUntil: "networkidle" });
-
-    // Wait until the podium rows are injected
-    await page.waitForSelector("table tbody tr", { timeout: 20000 });
-
-    // Evaluate inside the rendered DOM
-    const podium = await page.evaluate(() => {
-      const rows = Array.from(document.querySelectorAll("table tbody tr")).slice(0, 3);
-      return rows.map((r) => {
-        const cells = r.querySelectorAll("td");
-        return {
-          rank: cells[0]?.innerText?.trim() || "",
-          name: cells[1]?.innerText?.trim() || "",
-          team: cells[2]?.innerText?.trim() || "",
-          time: cells[cells.length - 1]?.innerText?.trim() || ""
-        };
-      });
-    });
-
-    if (!podium.length) {
-      // Save debug screenshot for inspection
-      const debugPath = path.join(DATA_DIR, "debug.png");
-      await page.screenshot({ path: debugPath });
-      console.warn(`⚠️ No podium rows found. Screenshot saved to ${debugPath}`);
-      return res.json({ ok: false, message: "No podium rows found", url });
-    }
-
-    console.log("✅ Extracted podium:", podium);
-    res.json({ ok: true, url, podium });
+    const podium = await extractPodium(testUrl);
+    res.json({ ok: true, url: testUrl, podium });
   } catch (err) {
-    console.error("❌ Error testing single event:", err);
-    res.status(500).json({ ok: false, error: err.message });
-  } finally {
-    if (browser) await browser.close();
+    log(`❌ Error testing one: ${err.message}`);
+    res.json({ ok: false, error: err.message });
   }
 });
 
-// -------------------------
-// 🚀 (Optional placeholder) scrape-all
-// -------------------------
+// Full scrape-all (dummy mode for now)
 app.post("/api/scrape-all", async (req, res) => {
-  // Placeholder while testing /api/test-one
+  log("🧠 scrape-all called (dummy mode for Fly.io single-test stage)");
   res.json({
     accepted: true,
     planned: 0,
-    note: "Use /api/test-one first to validate DOM extraction before scaling up."
+    force: !!req.query.force,
+    note: "Background crawl disabled in test mode",
   });
 });
 
-// -------------------------
-// 🧩 Start Express
-// -------------------------
+// Logs
+app.get("/api/logs", async (req, res) => {
+  if (!fs.existsSync(logFile)) {
+    return res.json({ file: path.basename(logFile), lines: [] });
+  }
+  const lines = fs.readFileSync(logFile, "utf-8").split("\n").slice(-100);
+  res.json({ file: path.basename(logFile), lines });
+});
+
+// ------------------ Start Server ------------------
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ HYROX Scraper v4.4 listening on 0.0.0.0:${PORT}`);
+  log(`✅ HYROX Scraper v4.5 listening on 0.0.0.0:${PORT}`);
 });
