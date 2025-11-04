@@ -5,15 +5,14 @@ primary_region = "yyz"
   PORT = "10000"
   NODE_ENV = "production"
 
-[build]
-  image = "mcr.microsoft.com/playwright:v1.56.1-jammy"
-
 [[services]]
   protocol = "tcp"
   internal_port = 10000
+
   [[services.ports]]
     port = 80
     handlers = ["http"]
+
   [[services.ports]]
     port = 443
     handlers = ["tls", "http"]
