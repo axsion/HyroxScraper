@@ -64,10 +64,10 @@ app.get("/api/scrape", async (req, res) => {
   if (!url) return res.status(400).json({ error: "Missing ?url parameter" });
 
   try {
-    const browser = await chromium.launch({
-      executablePath: CHROMIUM_PATH,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    });
+const browser = await chromium.launch({
+  headless: true,
+  args: ["--no-sandbox", "--disable-setuid-sandbox"],
+});
     const page = await browser.newPage();
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
     const html = await page.content();
