@@ -1,26 +1,31 @@
-# syntax=docker/dockerfile:1
-FROM node:20-slim
+# syntax = docker/dockerfile:1
 
+# --- Base image with Playwright + Chromium preinstalled ---
+FROM mcr.microsoft.com/playwright:v1.56.1-jammy
+
+# --- Set working directory ---
 WORKDIR /app
-ENV NODE_ENV=production
-ENV PORT=10000
 
-# Install Chromium dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libnss3 libxss1 libasound2 fonts-liberation libatk-bridge2.0-0 \
-    libgtk-3-0 libx11-xcb1 libxcomposite1 libxrandr2 libxdamage1 \
-    libgbm1 xvfb wget curl ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
-
-# Copy package files and install dependencies
+# --- Copy package files and install dependencies ---
 COPY package*.json ./
 RUN npm install --omit=dev
 
-# Install Playwright browsers (Chromium only)
-RUN npx playwright install chromium --with-deps
-
-# Copy all source code
+# --- Copy application code (including .playwright folder for baked Chromium) ---
 COPY . .
+# Make sure the chromium binary folder is part of the image
+# (it should exist in your repo at .playwright/chromium-1194/chrome-linux/chrome)
+COPY .playwright .playwright
 
+# --- Environment configuration ---
+ENV NODE_ENV=production
+ENV PORT=10000
+
+# --- Expose HTTP port ---
 EXPOSE 10000
-CMD ["npm", "start"]
+
+# --- Health check for Fly.io smoke tests ---
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+  CMD curl -f http://localhost:10000/api/health || exit 1
+
+# --- Run the app ---
+CMD ["node", "index.js"]
