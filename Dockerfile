@@ -5,14 +5,12 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=10000
 
-# Install dependencies needed by Chromium
+# Chromium runtime deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libnss3 libxss1 libasound2 fonts-liberation libatk-bridge2.0-0 libgtk-3-0 \
-    libx11-xcb1 libxcomposite1 libxrandr2 libxdamage1 libgbm1 xvfb wget curl && \
+    libnss3 libxss1 libasound2 fonts-liberation libatk-bridge2.0-0 \
+    libgtk-3-0 libx11-xcb1 libxcomposite1 libxrandr2 libxdamage1 \
+    libgbm1 xvfb wget curl ca-certificates && \
     rm -rf /var/lib/apt/lists/*
-
-# Install Playwright (with browser binaries)
-RUN npm install playwright@1.56.1
 
 COPY package*.json ./
 RUN npm install --omit=dev
@@ -20,4 +18,4 @@ RUN npm install --omit=dev
 COPY . .
 
 EXPOSE 10000
-CMD ["node", "index.js"]
+CMD ["npm", "start"]
