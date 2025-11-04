@@ -63,7 +63,6 @@ async function launchBrowser() {
   });
 }
 
-// --- Podium Extractor ---
 async function extractPodium(url) {
   const browser = await launchBrowser();
   const page = await browser.newPage();
@@ -71,31 +70,40 @@ async function extractPodium(url) {
   try {
     log(`🔎 Opening ${url}`);
     await page.goto(url, { timeout: 60000, waitUntil: "domcontentloaded" });
-    await page.waitForSelector("table", { timeout: 10000 });
 
-    const html = await page.content();
-    const $ = cheerio.load(html);
+    // Wait until at least one valid result row (rank number and time) appears
+    await page.waitForFunction(() => {
+      const rows = document.querySelectorAll("table tbody tr");
+      return Array.from(rows).some(row => {
+        const cells = row.querySelectorAll("td");
+        return cells.length > 3 && /\d+:\d{2}/.test(cells[cells.length - 1].innerText);
+      });
+    }, { timeout: 20000 });
 
-    // Parse the first 3 rows in the ranking table
-    const podium = [];
-    $("table tbody tr").slice(0, 3).each((i, el) => {
-      const rank = $(el).find("td:nth-child(1)").text().trim();
-      const team = $(el).find("td:nth-child(2)").text().trim();
-      const members = $(el).find("td:nth-child(3)").text().trim();
-      const time = $(el).find("td:last-child").text().trim();
-      podium.push({ rank, team, members, time });
+    // Evaluate table contents inside browser context
+    const podium = await page.evaluate(() => {
+      const rows = Array.from(document.querySelectorAll("table tbody tr")).slice(0, 3);
+      return rows.map(row => {
+        const cells = row.querySelectorAll("td");
+        const rank = cells[0]?.innerText.trim();
+        const team = cells[1]?.innerText.trim();
+        const members = cells[2]?.innerText.trim();
+        const time = cells[cells.length - 1]?.innerText.trim();
+        return { rank, team, members, time };
+      });
     });
+
+    await browser.close();
 
     if (podium.length === 0) throw new Error("No podium rows");
     log(`✅ Extracted ${podium.length} podium entries from ${url}`);
-
-    await browser.close();
     return { url, podium };
   } catch (err) {
     await browser.close();
     throw new Error(err.message);
   }
 }
+
 
 // --- Build All URLs ---
 async function buildEventUrls() {
