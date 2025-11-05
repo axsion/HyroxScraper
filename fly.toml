@@ -1,11 +1,13 @@
-app = "your-app-name"
+app = "hyroxscraper"
+
+primary_region = "yyz"  # Toronto (adjust if needed)
 
 [build]
   builtin = "node"
 
 [env]
-  NODE_ENV = "production"
   PORT = "8080"
+  NODE_ENV = "production"
 
 [[mounts]]
   source = "data"
@@ -13,14 +15,17 @@ app = "your-app-name"
 
 [[services]]
   internal_port = 8080
-  processes = ["app"]
   protocol = "tcp"
+
   [services.concurrency]
-    hard_limit = 100
     soft_limit = 50
+    hard_limit = 100
+    type = "connections"
+
   [[services.ports]]
-    handlers = ["http"]
     port = 80
+    handlers = ["http"]
+
   [[services.ports]]
-    handlers = ["tls", "http"]
     port = 443
+    handlers = ["tls", "http"]
