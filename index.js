@@ -349,20 +349,30 @@ app.get("/api/health", (_req, res) => {
 // Optional: ?only_event=s8-2025-rome
 app.get("/api/update-masters", async (req, res) => {
   try {
-    const onlyEvent = (req.query.only_event || "").toString().trim() || null;
+    const fileData = fs.readFileSync(EVENTS_FILE, "utf8").trim().split("\n").filter(Boolean);
+    const single = req.query.slug ? req.query.slug.trim() : null;
 
-    const rows = await runFullScrape({ onlyEvent });
+    const toProcess = single ? [single] : fileData;
 
-    const cache = {
-      last_run: new Date().toISOString(),
-      rows,
-      columns: columnsSchema(),
-    };
-    await saveCache(cache);
+    let totalUpdated = 0;
 
-    res.json({ ok: true, updated: rows.length, only_event: onlyEvent || null });
+    for (const slug of toProcess) {
+      const count = await crawlEvent(slug);
+      totalUpdated += count;
+      console.log(`✅ ${slug} → ${count} rows`);
+    }
+
+    fs.writeFileSync(LASTRUN_FILE, JSON.stringify({ updated: totalUpdated, at: new Date() }, null, 2));
+
+    return res.json({
+      ok: true,
+      updated: totalUpdated,
+      only_event: single || null
+    });
+
   } catch (err) {
-    res.status(500).json({ ok: false, error: String(err) });
+    console.error(err);
+    return res.status(500).json({ error: err.message });
   }
 });
 
