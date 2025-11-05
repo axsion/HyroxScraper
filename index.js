@@ -1,195 +1,196 @@
-/**
- * HYROX Masters Scraper v4.5
- * Fully static scraping (no Playwright), fast + Fly.io stable.
- */
-
 import express from "express";
 import fetch from "node-fetch";
-import { load } from "cheerio"; // ✅ correct non-default import
+import * as cheerio from "cheerio";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
-// Paths
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PORT = process.env.PORT || 10000;
+
+const app = express();
+
+// ---------------- CONFIG ----------------
+
 const EVENTS_FILE = path.join(__dirname, "events.txt");
-const CACHE_FILE = path.join(__dirname, "masters-cache.json");
 
-// Age Groups
+// City name mapping
+const CITY_MAP = {
+  "birmingham": "Birmingham",
+  "paris": "Paris",
+  "valencia": "Valencia",
+  "gdansk": "Gdansk",
+  "geneva": "Geneva",
+  "hamburg": "Hamburg",
+  "toronto": "Toronto",
+  "oslo": "Oslo",
+  "rome": "Rome",
+  "boston": "Boston",
+  "maastricht": "Maastricht",
+  "sao-paulo": "São Paulo",
+  "acapulco": "Acapulco",
+  "perth": "Perth",
+  "mumbai": "Mumbai",
+  "beijing": "Beijing",
+  "yokohama": "Yokohama",
+  "hong-kong": "Hong Kong",
+  "cape-town": "Cape Town",
+  "new-delhi": "New Delhi",
+  "abu-dhabi": "Abu Dhabi",
+  "sydney": "Sydney",
+  "singapore": "Singapore",
+  "new-york": "New York",
+  "rimini": "Rimini",
+  "cardiff": "Cardiff",
+  "riga": "Riga",
+  "bangkok": "Bangkok",
+  "berlin": "Berlin",
+};
+
+// Age groups + genders
 const AGE_GROUPS = ["45-49", "50-54", "55-59", "60-64", "65-69", "70-74"];
+const GENDERS = [
+  { key: "men", label: "MEN" },
+  { key: "women", label: "WOMEN" }
+];
 
-// Load events list
-function loadEvents() {
-  if (!fs.existsSync(EVENTS_FILE)) return [];
-  return fs.readFileSync(EVENTS_FILE, "utf8")
-    .split("\n")
-    .map(x => x.trim())
-    .filter(Boolean);
-}
+// Output sheet
+const SHEET_FILE = path.join(__dirname, "masters.json");
 
-// Safe cache read/write
-function saveCache(data) {
-  fs.writeFileSync(CACHE_FILE, JSON.stringify(data, null, 2));
-}
-function loadCache() {
-  return fs.existsSync(CACHE_FILE)
-    ? JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"))
-    : { rows: [], updated: 0 };
-}
+// ---------------- HELPERS ----------------
 
-// ---- PARSER ----
-function parsePodium(html, slug, ageGroup, gender) {
-  const $ = load(html);
-  const rows = $("table tbody tr");
-
-  // Extract CITY NAME correctly from slug
-  // slug example: s8-2025-rome-hyrox-men
+function parseEventSlug(slug) {
+  // e.g., "s8-2025-rome" → "rome", "2025"
   const parts = slug.split("-");
-  // Take everything after season + year: ["s8", "2025", "rome", "hyrox", "men"]
-  const cityParts = parts.slice(2, parts.length - 2);
-  let city = cityParts.join(" ").replace(/-/g, " ");
-  city = city.charAt(0).toUpperCase() + city.slice(1);
+  const year = parts[1];
+  const cityKey = parts.slice(2).join("-");
+  const city = CITY_MAP[cityKey] || cityKey;
+  return { city, year };
+}
 
-  // If no table detected → return "no podium"
-  if (rows.length === 0) {
-    return {
-      "Event plus Cat": `No podium available for ${slug}?ag=${ageGroup}`,
-      Event: slug,
-      City: city,
-      Date: "2025",
-      Category: ageGroup,
-      Gender: gender.toUpperCase(),
-      Gold: "",
-      Time1: "",
-      Silver: "",
-      Time2: "",
-      Bronze: "",
-      Time3: ""
-    };
+function formatDisplay(city, year, gender, category) {
+  return `${city} ${year} - ${gender} - ${category}`;
+}
+
+function ensureSheet() {
+  if (!fs.existsSync(SHEET_FILE)) {
+    fs.writeFileSync(SHEET_FILE, JSON.stringify([]));
   }
+}
 
-  function extract(row) {
-    const cols = $(row).find("td");
-    const athlete = $(cols[1]).text().trim();
-    const time = $(cols[3]).text().trim();
-    return { athlete, time };
-  }
+function loadSheet() {
+  ensureSheet();
+  return JSON.parse(fs.readFileSync(SHEET_FILE, "utf8"));
+}
 
-  const gold = extract(rows[0]);
-  const silver = rows[1] ? extract(rows[1]) : { athlete: "", time: "" };
-  const bronze = rows[2] ? extract(rows[2]) : { athlete: "", time: "" };
+function saveSheet(rows) {
+  fs.writeFileSync(SHEET_FILE, JSON.stringify(rows, null, 2));
+}
 
+// ---------------- SCRAPER ----------------
+
+async function scrapePodium(url, eventSlug, category, genderLabel) {
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  const html = await res.text();
+
+  const $ = cheerio.load(html);
+
+  // HYROX result table selector
+  const table = $("table.table-bordered.table-striped");
+  if (!table.length) return null;
+
+  const rows = table.find("tbody tr");
+
+  const get = (i) => {
+    const row = rows.eq(i);
+    if (!row.length) return null;
+    const name = row.find("td").eq(1).text().trim();
+    const rank = row.find("td").eq(0).text().trim();
+    if (!name) return null;
+    return { rank, name };
+  };
+
+  const gold = get(0);
+  const silver = get(1);
+  const bronze = get(2);
+
+  if (!gold) return null;
+
+  const { city, year } = parseEventSlug(eventSlug);
   return {
-    "Event plus Cat": `Ranking of 2025 ${city} HYROX ${gender.toUpperCase()}${ageGroup}`,
-    Event: `Ranking of 2025 ${city} HYROX ${gender.toUpperCase()}`,
-    City: city,
-    Date: "2025",
-    Category: ageGroup,
-    Gender: gender.toUpperCase(),
-    Gold: gold.athlete,
-    Time1: gold.time,
-    Silver: silver.athlete,
-    Time2: silver.time,
-    Bronze: bronze.athlete,
-    Time3: bronze.time
+    "Event plus Cat": formatDisplay(city, year, genderLabel, category),
+    "Event": formatDisplay(city, year, genderLabel, ""),
+    "City": city,
+    "Date": year,
+    "Category": category,
+    "Gender": genderLabel,
+    "Gold": gold.rank,
+    "Time1": gold.name,
+    "Silver": silver ? silver.rank : "",
+    "Time2": silver ? silver.name : "",
+    "Bronze": bronze ? bronze.rank : "",
+    "Time3": bronze ? bronze.name : "",
   };
 }
 
+// ---------------- UPDATE LOGIC ----------------
 
-  function extract(row) {
-    const cols = $(row).find("td"); 
-    return {
-      athlete: $(cols[1]).text().trim(),
-      time: $(cols[3]).text().trim()
-    };
-  }
+async function updateMasters(onlySlug = null) {
+  const events = fs.readFileSync(EVENTS_FILE, "utf8")
+    .split("\n")
+    .map(l => l.trim())
+    .filter(Boolean);
 
-  const gold = extract(rows[0]);
-  const silver = rows[1] ? extract(rows[1]) : { athlete: "", time: "" };
-  const bronze = rows[2] ? extract(rows[2]) : { athlete: "", time: "" };
+  let sheet = loadSheet();
+  let updated = 0;
 
-  let city = slug.split("-").slice(3).join("-").replace(/-/g, " ");
-  city = city.charAt(0).toUpperCase() + city.slice(1);
+  for (const slug of events) {
+    if (onlySlug && slug !== onlySlug) continue;
 
-  return {
-    "Event plus Cat": `Ranking of 2025 ${city} HYROX ${gender.toUpperCase()}${ageGroup}`,
-    Event: `Ranking of 2025 ${city} HYROX ${gender.toUpperCase()}`,
-    City: city,
-    Date: "2025",
-    Category: ageGroup,
-    Gender: gender.toUpperCase(),
-    Gold: gold.athlete,
-    Time1: gold.time,
-    Silver: silver.athlete,
-    Time2: silver.time,
-    Bronze: bronze.athlete,
-    Time3: bronze.time
-  };
-}
+    for (const category of AGE_GROUPS) {
+      for (const gender of GENDERS) {
+        const url = `https://www.hyresult.com/ranking/${slug}-hyrox-${gender.key}?ag=${category}`;
+        const row = await scrapePodium(url, slug, category, gender.label);
+        if (!row) continue;
 
-// ---- SCRAPER ----
-async function scrapeEvent(slug) {
-  const genders = ["men", "women"];
-  const results = [];
-
-  for (const gender of genders) {
-    for (const ag of AGE_GROUPS) {
-      const url = `https://www.hyresult.com/ranking/${slug}-hyrox-${gender}?ag=${ag}`;
-      try {
-        const res = await fetch(url);
-        const html = await res.text();
-        results.push(parsePodium(html, slug, ag, gender));
-      } catch (err) {
-        console.log("ERROR fetching:", url);
+        sheet = sheet.filter(r => !(r["Event plus Cat"] === row["Event plus Cat"]));
+        sheet.push(row);
+        updated++;
       }
     }
   }
 
-  return results;
+  saveSheet(sheet);
+  return updated;
 }
 
-// ---- EXPRESS ----
-const app = express();
-app.use(express.json());
+// ---------------- API ROUTES ----------------
 
-// Update all events OR one slug
-app.get("/api/update-masters", async (req, res) => {
-  const events = loadEvents();
-  if (events.length === 0) return res.json({ error: "No events in events.txt" });
-
-  const requestedSlug = req.query.slug;
-  const cache = loadCache();
-  cache.rows = [];
-  cache.updated = 0;
-
-  for (const slug of events) {
-    if (requestedSlug && slug !== requestedSlug) continue;
-    const rows = await scrapeEvent(slug);
-    cache.rows.push(...rows);
-    cache.updated += rows.length;
-  }
-
-  saveCache(cache);
-  res.json({ ok: true, updated: cache.updated, only_event: requestedSlug ?? null });
-});
-
-// Return cached results
 app.get("/api/masters", (req, res) => {
-  const cache = loadCache();
+  const sheet = loadSheet();
   res.json({
-    total_rows: cache.rows.length,
-    rows: cache.rows,
-    columns: [
-      "Event plus Cat", "Event", "City", "Date", "Category", "Gender",
-      "Gold", "Time1", "Silver", "Time2", "Bronze", "Time3"
-    ],
-    last_run: cache.updated
+    total_rows: sheet.length,
+    rows: sheet,
+    columns: Object.keys(sheet[0] || {}),
+    last_run: sheet.length
   });
 });
 
-// Health check
-app.get("/api/health", (req, res) => res.json({ ok: true }));
+app.get("/api/update-masters", async (req, res) => {
+  try {
+    const slug = req.query.slug || null;
+    const updated = await updateMasters(slug);
+    res.json({ ok: true, updated });
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
 
-// Fly.io listen fix ✅
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, "0.0.0.0", () => console.log(`✅ HYROX scraper running on ${PORT}`));
+app.get("/", (_, res) => {
+  res.send("HYROX Masters Scraper Running ✅");
+});
+
+// ---------------- START ----------------
+
+app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
