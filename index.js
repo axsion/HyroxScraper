@@ -1,6 +1,5 @@
 /**
- * HYROX SCRAPER - Master Categories Only (45+)
- * Fast, stable, no headless browser required.
+ * HYROX SCRAPER - Masters (45+) - MEN + WOMEN
  */
 
 import express from "express";
@@ -29,26 +28,29 @@ function slugFromUrl(url) {
   return m ? m[1] : url;
 }
 
+// ✅ New robust parser
 function parseMeta(url) {
   const slug = slugFromUrl(url);
-  const year = slug.match(/s\d-(\d{4})-/)?.[1] ?? "";
-  const cityPart = slug.match(/\d{4}-([a-z0-9-]+)-hyrox-/i)?.[1] ?? "";
-  const city = cityPart.split("-").map(s => s[0].toUpperCase() + s.slice(1)).join(" ");
-  const gender = /hyrox-women/i.test(slug) ? "WOMEN" : "MEN";
+  const parts = slug.split("-");
+
+  const year = parts[1];
+  const gender = slug.includes("hyrox-women") ? "WOMEN" : "MEN";
+
+  const cityParts = parts
+    .slice(2)
+    .filter(p => !["hyrox", "men", "women"].includes(p));
+
+  const city = cityParts
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+
   const eventTitle = `Ranking of ${year} ${city} HYROX ${gender}`;
+
   return { slug, year, city, gender, eventTitle };
 }
 
-function buildRow({ eventTitle, city, year, cat, gender, podium }) {
-  const epc = `${eventTitle}${cat}`;
-  const [g = {}, s = {}, b = {}] = podium;
-  return [
-    epc, eventTitle, city, year, cat, gender,
-    g.name || "", g.time || "",
-    s.name || "", s.time || "",
-    b.name || "", b.time || ""
-  ];
-}
+// Master categories only
+const MASTER_CATS = ["45-49","50-54","55-59","60-64","65-69","70-74","75-79","80-84","85-89"];
 
 async function fetchHtml(url) {
   const res = await fetch(url, {
@@ -61,85 +63,113 @@ async function fetchHtml(url) {
   return await res.text();
 }
 
-function extractAgeCategories(html) {
+function extractAvailableCategories(html) {
   const cats = new Set();
   const re = /\b(4[5-9]-\d{2}|5[0-9]-\d{2}|6[0-9]-\d{2}|7[0-9]-\d{2}|8[0-9]-\d{2})\b/g;
-  let m;
-  while ((m = re.exec(html))) cats.add(m[1]);
+  let match;
+  while ((match = re.exec(html))) cats.add(match[1]);
   return [...cats];
 }
 
-function parsePodiumFromTable(html) {
+function parsePodium(html) {
   const $ = cheerio.load(html);
   const rows = $("table tbody tr").slice(0, 3);
-  const out = [];
+  const result = [];
   rows.each((_, tr) => {
-    const cells = $(tr).find("td, th").map((_, td) => $(td).text().trim()).get();
+    const cells = $(tr).find("td,th").map((_, td) => $(td).text().trim()).get();
     const time = cells.find(t => /\d{1,2}:\d{2}(:\d{2})?$/.test(t)) || "";
-    const name = cells.filter(t => t && !/^\d+$/.test(t) && !/\d{1,2}:\d{2}/.test(t))
-      .sort((a, b) => b.length - a.length)[0] || "";
-    if (name || time) out.push({ name, time });
+    const name = cells.filter(t => t && !/\d{1,2}:\d{2}/.test(t) && !/^\d+$/.test(t)).sort((a, b) => b.length - a.length)[0] || "";
+    if (name || time) result.push({ name, time });
   });
-  return out.length === 3 ? out : [];
+  return result.length === 3 ? result : [];
+}
+
+function buildRow(meta, cat, podium) {
+  return [
+    `${meta.eventTitle}${cat}`,
+    meta.eventTitle,
+    meta.city,
+    meta.year,
+    cat,
+    meta.gender,
+    podium[0].name, podium[0].time,
+    podium[1].name, podium[1].time,
+    podium[2].name, podium[2].time
+  ];
+}
+
+async function expandGenderVariants(url) {
+  const slug = slugFromUrl(url);
+  
+  // Already a gender page → return as-is
+  if (slug.includes("hyrox-men") || slug.includes("hyrox-women")) return [url];
+
+  // Otherwise add both gender variants
+  const base = url.replace(slug, slug);
+  return [
+    `${url}-hyrox-men`,
+    `${url}-hyrox-women`
+  ];
 }
 
 async function scrapeEvent(url, { force = false } = {}) {
   const meta = parseMeta(url);
   const progress = readScraped();
-  const prev = progress[meta.slug];
 
-  if (prev && prev.status === "complete" && !force)
-    return { meta, skipped: true, rows: [] };
+  if (progress[meta.slug]?.status === "complete" && !force)
+    return { slug: meta.slug, produced: 0 };
 
   const baseHtml = await fetchHtml(url);
-  const cats = extractAgeCategories(baseHtml);
-  const rows = [];
+  const cats = extractAvailableCategories(baseHtml).filter(c => MASTER_CATS.includes(c));
+
+  let rows = [];
 
   for (const cat of cats) {
-    const catUrl = url.includes("?")
-      ? `${url}&ag=${cat}`
-      : `${url}?ag=${cat}`;
+    const catUrl = `${url}?ag=${cat}`;
     const catHtml = await fetchHtml(catUrl);
-    const podium = parsePodiumFromTable(catHtml);
+    const podium = parsePodium(catHtml);
     if (podium.length === 3)
-      rows.push(buildRow({ eventTitle: meta.eventTitle, city: meta.city, year: meta.year, cat, gender: meta.gender, podium }));
+      rows.push(buildRow(meta, cat, podium));
   }
 
-  if (rows.length > 0) {
-    progress[meta.slug] = { status: "complete", last_scraped: new Date().toISOString() };
-    writeScraped(progress);
-  }
+  if (rows.length > 0)
+    progress[meta.slug] = { status: "complete", last: new Date().toISOString() };
+  else
+    progress[meta.slug] = { status: "empty-or-failed", last: new Date().toISOString() };
 
-  return { meta, skipped: false, rows };
+  writeScraped(progress);
+  return { slug: meta.slug, produced: rows.length, rows };
 }
 
-app.get("/api/health", (_req, res) => res.json({ ok: true }));
+app.get("/api/health", (_, res) => res.json({ ok: true }));
 
-app.get("/api/check-events", async (_req, res) => {
+app.get("/api/check-events", async (_, res) => {
   const txt = await fetch(EVENTS_TXT_URL).then(r => r.text());
-  const urls = txt.split(/\r?\n/).filter(l => l.startsWith("http"));
+  const baseUrls = txt.split(/\r?\n/).filter(l => l.trim().startsWith("http"));
   const progress = readScraped();
-  res.json(urls.map(u => {
-    const slug = slugFromUrl(u);
-    return { slug, url: u, status: progress[slug]?.status || "pending" };
+  const expanded = (await Promise.all(baseUrls.map(expandGenderVariants))).flat();
+  res.json(expanded.map(url => {
+    const slug = slugFromUrl(url);
+    return { slug, url, status: progress[slug]?.status || "pending" };
   }));
 });
 
 app.get("/api/scrape-all", async (req, res) => {
   const force = req.query.force === "true";
   const txt = await fetch(EVENTS_TXT_URL).then(r => r.text());
-  const urls = txt.split(/\r?\n/).filter(l => l.startsWith("http"));
+  const baseUrls = txt.split(/\r?\n/).filter(l => l.trim().startsWith("http"));
+  const expanded = (await Promise.all(baseUrls.map(expandGenderVariants))).flat();
 
   let allRows = [];
   let results = [];
 
-  for (const u of urls) {
+  for (const url of expanded) {
     try {
-      const r = await scrapeEvent(u, { force });
-      results.push({ slug: r.meta.slug, produced: r.rows.length });
-      allRows.push(...r.rows);
+      const r = await scrapeEvent(url, { force });
+      results.push({ slug: r.slug, produced: r.produced });
+      if (r.rows) allRows.push(...r.rows);
     } catch (e) {
-      results.push({ slug: slugFromUrl(u), error: String(e) });
+      results.push({ slug: slugFromUrl(url), error: e.toString() });
     }
   }
 
@@ -151,4 +181,4 @@ app.get("/api/scrape-all", async (req, res) => {
   });
 });
 
-app.listen(PORT, () => console.log("✅ HYROX MASTER SCRAPER RUNNING ON PORT", PORT));
+app.listen(PORT, () => console.log("✅ HYROX Masters Scraper Running on", PORT));
