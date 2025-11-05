@@ -20,10 +20,17 @@ const AGE_GROUPS = ["45-49","50-54","55-59","60-64","65-69","70-74"];
 
 // TEST MODE: only Rome (men + women). After validation, swap to dynamic events list.
 async function loadEvents() {
-  // Example slugs produced normally from your events.txt expansion:
-  //   s8-2025-rome-hyrox-men
-  //   s8-2025-rome-hyrox-women
-  return ["s8-2025-rome-hyrox-men", "s8-2025-rome-hyrox-women"];
+  const url = "https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt";
+  const res = await fetch(url);
+  const text = await res.text();
+  const base = text.split("\n").map(s => s.trim()).filter(Boolean);
+
+  const expanded = [];
+  for (const slug of base) {
+    expanded.push(`${slug}-hyrox-men`);
+    expanded.push(`${slug}-hyrox-women`);
+  }
+  return expanded;
 }
 
 // ====== CACHE ======
