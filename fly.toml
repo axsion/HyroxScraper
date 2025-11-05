@@ -1,23 +1,26 @@
-app = "hyroxscraper"
-primary_region = "yyz"
-
-[env]
-  PORT = "10000"
-  NODE_ENV = "production"
+app = "your-app-name"
 
 [build]
-  image = "mcr.microsoft.com/playwright:v1.56.1-jammy"
+  builtin = "node"
 
-[[services]]
-  protocol = "tcp"
-  internal_port = 10000
-  [[services.ports]]
-    port = 80
-    handlers = ["http"]
-  [[services.ports]]
-    port = 443
-    handlers = ["tls", "http"]
+[env]
+  NODE_ENV = "production"
+  PORT = "8080"
 
-[mounts]
+[[mounts]]
   source = "data"
   destination = "/data"
+
+[[services]]
+  internal_port = 8080
+  processes = ["app"]
+  protocol = "tcp"
+  [services.concurrency]
+    hard_limit = 100
+    soft_limit = 50
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
