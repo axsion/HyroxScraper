@@ -42,13 +42,21 @@ function parsePodium(html, slug, ageGroup, gender) {
   const $ = load(html);
   const rows = $("table tbody tr");
 
-  // No table = no podium
+  // Extract CITY NAME correctly from slug
+  // slug example: s8-2025-rome-hyrox-men
+  const parts = slug.split("-");
+  // Take everything after season + year: ["s8", "2025", "rome", "hyrox", "men"]
+  const cityParts = parts.slice(2, parts.length - 2);
+  let city = cityParts.join(" ").replace(/-/g, " ");
+  city = city.charAt(0).toUpperCase() + city.slice(1);
+
+  // If no table detected → return "no podium"
   if (rows.length === 0) {
     return {
       "Event plus Cat": `No podium available for ${slug}?ag=${ageGroup}`,
       Event: slug,
-      City: "",
-      Date: "",
+      City: city,
+      Date: "2025",
       Category: ageGroup,
       Gender: gender.toUpperCase(),
       Gold: "",
@@ -59,6 +67,34 @@ function parsePodium(html, slug, ageGroup, gender) {
       Time3: ""
     };
   }
+
+  function extract(row) {
+    const cols = $(row).find("td");
+    const athlete = $(cols[1]).text().trim();
+    const time = $(cols[3]).text().trim();
+    return { athlete, time };
+  }
+
+  const gold = extract(rows[0]);
+  const silver = rows[1] ? extract(rows[1]) : { athlete: "", time: "" };
+  const bronze = rows[2] ? extract(rows[2]) : { athlete: "", time: "" };
+
+  return {
+    "Event plus Cat": `Ranking of 2025 ${city} HYROX ${gender.toUpperCase()}${ageGroup}`,
+    Event: `Ranking of 2025 ${city} HYROX ${gender.toUpperCase()}`,
+    City: city,
+    Date: "2025",
+    Category: ageGroup,
+    Gender: gender.toUpperCase(),
+    Gold: gold.athlete,
+    Time1: gold.time,
+    Silver: silver.athlete,
+    Time2: silver.time,
+    Bronze: bronze.athlete,
+    Time3: bronze.time
+  };
+}
+
 
   function extract(row) {
     const cols = $(row).find("td"); 
