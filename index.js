@@ -1,5 +1,10 @@
 /**
- * HYROX SCRAPER - Masters (45+) - MEN + WOMEN
+ * HYROX Masters Scraper (Fly.io Edition)
+ * --------------------------------------
+ * ✅ Scrapes only Masters categories (45-49 and up)
+ * ✅ Supports MEN + WOMEN
+ * ✅ Chromium path works in Fly.io deploy
+ * ✅ Saves last-run data to /data/last-run.json
  */
 
 import express from "express";
@@ -7,178 +12,181 @@ import fetch from "node-fetch";
 import * as cheerio from "cheerio";
 import fs from "fs";
 import path from "path";
+import { chromium } from "playwright-core";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = process.env.PORT || 8080;
 const app = express();
+const PORT = process.env.PORT || 8080;
 
-const EVENTS_TXT_URL = "https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt";
-const DATA_DIR = "/data";
-const SCRAPED_PATH = path.join(DATA_DIR, "scraped.json");
+// ====== Local persistent storage ======
+const LAST_RUN_FILE = "/data/last-run.json";
 
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-if (!fs.existsSync(SCRAPED_PATH)) fs.writeFileSync(SCRAPED_PATH, JSON.stringify({}, null, 2));
+// ====== Chromium binary on Fly.io ======
+const CHROMIUM_PATH = "/usr/bin/chromium-browser";
 
-const readScraped = () => JSON.parse(fs.readFileSync(SCRAPED_PATH, "utf8"));
-const writeScraped = (obj) => fs.writeFileSync(SCRAPED_PATH, JSON.stringify(obj, null, 2));
+// ====== Masters categories ======
+const MASTERS = ["45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79"];
 
-function slugFromUrl(url) {
-  const m = url.match(/ranking\/([^/?#]+)/i);
-  return m ? m[1] : url;
+// ====== Gender Slugs ======
+const GENDERS = [
+  { slug: "hyrox-men", label: "MEN" },
+  { slug: "hyrox-women", label: "WOMEN" }
+];
+
+// ====== Season Event Slugs (dynamic source still supported) ======
+const EVENTS_URL =
+  "https://raw.githubusercontent.com/axsion/HyroxScraper/main/events.txt";
+
+// Load events.txt from GitHub
+async function loadEvents() {
+  try {
+    const res = await fetch(EVENTS_URL);
+    const text = await res.text();
+    return text.split("\n").map(e => e.trim()).filter(e => e.length > 0);
+  } catch (err) {
+    console.error("Failed to load events list:", err);
+    return [];
+  }
 }
 
-// ✅ New robust parser
-function parseMeta(url) {
-  const slug = slugFromUrl(url);
-  const parts = slug.split("-");
+// Scrape a single podium page
+async function scrapePodium(url, eventSlug, genderLabel, category) {
+  const browser = await chromium.launch({
+    args: ["--no-sandbox", "--disable-gpu"],
+    executablePath: CHROMIUM_PATH,
+    headless: true
+  });
 
-  const year = parts[1];
-  const gender = slug.includes("hyrox-women") ? "WOMEN" : "MEN";
+  const page = await browser.newPage();
+  await page.goto(url, { waitUntil: "domcontentloaded" });
 
-  const cityParts = parts
-    .slice(2)
-    .filter(p => !["hyrox", "men", "women"].includes(p));
+  const html = await page.content();
+  const $ = cheerio.load(html);
 
-  const city = cityParts
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
+  const rows = [];
 
-  const eventTitle = `Ranking of ${year} ${city} HYROX ${gender}`;
+  $(".ranking-list tbody tr").each((_, el) => {
+    const tds = $(el).find("td");
+    if (tds.length < 6) return;
 
-  return { slug, year, city, gender, eventTitle };
-}
+    const place = $(tds[0]).text().trim();
+    const athlete = $(tds[1]).text().trim();
+    const time = $(tds[5]).text().trim();
 
-// Master categories only
-const MASTER_CATS = ["45-49","50-54","55-59","60-64","65-69","70-74","75-79","80-84","85-89"];
-
-async function fetchHtml(url) {
-  const res = await fetch(url, {
-    headers: {
-      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
-      "accept-language": "en-US,en;q=0.9",
-      "cache-control": "no-cache"
+    if (["1", "2", "3"].includes(place)) {
+      rows.push({ place, athlete, time });
     }
   });
-  return await res.text();
+
+  await browser.close();
+
+  if (rows.length < 3) return []; // nothing useful
+
+  let city = eventSlug.split("-")[2] || "";
+  city = city.charAt(0).toUpperCase() + city.slice(1);
+
+  const year = "2025";
+
+  return [[
+    `Ranking of ${year} ${city} HYROX ${genderLabel.toUpperCase()}${category}`,
+    `Ranking of ${year} ${city} HYROX ${genderLabel.toUpperCase()}`,
+    city,
+    year,
+    category,
+    genderLabel.toUpperCase(),
+    rows[0].athlete,
+    rows[0].time,
+    rows[1].athlete,
+    rows[1].time,
+    rows[2].athlete,
+    rows[2].time
+  ]];
 }
 
-function extractAvailableCategories(html) {
-  const cats = new Set();
-  const re = /\b(4[5-9]-\d{2}|5[0-9]-\d{2}|6[0-9]-\d{2}|7[0-9]-\d{2}|8[0-9]-\d{2})\b/g;
-  let match;
-  while ((match = re.exec(html))) cats.add(match[1]);
-  return [...cats];
-}
+// Scrape a full event (MEN + WOMEN x Masters categories)
+async function scrapeEvent(eventSlug) {
+  const results = [];
 
-function parsePodium(html) {
-  const $ = cheerio.load(html);
-  const rows = $("table tbody tr").slice(0, 3);
-  const result = [];
-  rows.each((_, tr) => {
-    const cells = $(tr).find("td,th").map((_, td) => $(td).text().trim()).get();
-    const time = cells.find(t => /\d{1,2}:\d{2}(:\d{2})?$/.test(t)) || "";
-    const name = cells.filter(t => t && !/\d{1,2}:\d{2}/.test(t) && !/^\d+$/.test(t)).sort((a, b) => b.length - a.length)[0] || "";
-    if (name || time) result.push({ name, time });
-  });
-  return result.length === 3 ? result : [];
-}
-
-function buildRow(meta, cat, podium) {
-  return [
-    `${meta.eventTitle}${cat}`,
-    meta.eventTitle,
-    meta.city,
-    meta.year,
-    cat,
-    meta.gender,
-    podium[0].name, podium[0].time,
-    podium[1].name, podium[1].time,
-    podium[2].name, podium[2].time
-  ];
-}
-
-async function expandGenderVariants(url) {
-  const slug = slugFromUrl(url);
-  
-  // Already a gender page → return as-is
-  if (slug.includes("hyrox-men") || slug.includes("hyrox-women")) return [url];
-
-  // Otherwise add both gender variants
-  const base = url.replace(slug, slug);
-  return [
-    `${url}-hyrox-men`,
-    `${url}-hyrox-women`
-  ];
-}
-
-async function scrapeEvent(url, { force = false } = {}) {
-  const meta = parseMeta(url);
-  const progress = readScraped();
-
-  if (progress[meta.slug]?.status === "complete" && !force)
-    return { slug: meta.slug, produced: 0 };
-
-  const baseHtml = await fetchHtml(url);
-  const cats = extractAvailableCategories(baseHtml).filter(c => MASTER_CATS.includes(c));
-
-  let rows = [];
-
-  for (const cat of cats) {
-    const catUrl = `${url}?ag=${cat}`;
-    const catHtml = await fetchHtml(catUrl);
-    const podium = parsePodium(catHtml);
-    if (podium.length === 3)
-      rows.push(buildRow(meta, cat, podium));
+  for (const g of GENDERS) {
+    for (const cat of MASTERS) {
+      const url = `https://www.hyresult.com/ranking/${eventSlug}/${g.slug}?ag=${cat}`;
+      const rows = await scrapePodium(url, eventSlug, g.label, cat);
+      if (rows.length) results.push(...rows);
+    }
   }
 
-  if (rows.length > 0)
-    progress[meta.slug] = { status: "complete", last: new Date().toISOString() };
-  else
-    progress[meta.slug] = { status: "empty-or-failed", last: new Date().toISOString() };
-
-  writeScraped(progress);
-  return { slug: meta.slug, produced: rows.length, rows };
+  return results;
 }
 
-app.get("/api/health", (_, res) => res.json({ ok: true }));
+// Health check
+app.get("/api/health", (_, res) => res.json({ status: "ok" }));
 
+// Check which events are accessible
 app.get("/api/check-events", async (_, res) => {
-  const txt = await fetch(EVENTS_TXT_URL).then(r => r.text());
-  const baseUrls = txt.split(/\r?\n/).filter(l => l.trim().startsWith("http"));
-  const progress = readScraped();
-  const expanded = (await Promise.all(baseUrls.map(expandGenderVariants))).flat();
-  res.json(expanded.map(url => {
-    const slug = slugFromUrl(url);
-    return { slug, url, status: progress[slug]?.status || "pending" };
+  const events = await loadEvents();
+  const results = await Promise.all(events.map(async slug => {
+    const testUrl = `https://www.hyresult.com/ranking/${slug}`;
+    try {
+      const r = await fetch(testUrl);
+      return { slug, url: testUrl, status: r.status === 200 ? "ok" : "not-found" };
+    } catch {
+      return { slug, url: testUrl, status: "error" };
+    }
   }));
+  res.json(results);
 });
 
-app.get("/api/scrape-all", async (req, res) => {
-  const force = req.query.force === "true";
-  const txt = await fetch(EVENTS_TXT_URL).then(r => r.text());
-  const baseUrls = txt.split(/\r?\n/).filter(l => l.trim().startsWith("http"));
-  const expanded = (await Promise.all(baseUrls.map(expandGenderVariants))).flat();
-
-  let allRows = [];
-  let results = [];
-
-  for (const url of expanded) {
-    try {
-      const r = await scrapeEvent(url, { force });
-      results.push({ slug: r.slug, produced: r.produced });
-      if (r.rows) allRows.push(...r.rows);
-    } catch (e) {
-      results.push({ slug: slugFromUrl(url), error: e.toString() });
-    }
+// Scrape one event
+app.get("/api/scrape/:slug", async (req, res) => {
+  try {
+    const data = await scrapeEvent(req.params.slug);
+    res.json({ rows: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
+});
+
+// Scrape all events
+app.get("/api/scrape-all", async (_, res) => {
+  const events = await loadEvents();
+  let allRows = [];
+  const resultSummary = [];
+
+  for (const slug of events) {
+    const data = await scrapeEvent(slug);
+    resultSummary.push({ slug, produced: data.length });
+    allRows.push(...data);
+  }
+
+  // Save last-run for Google Sheets
+  fs.writeFileSync(
+    LAST_RUN_FILE,
+    JSON.stringify(
+      { last_run: new Date().toISOString(), total_rows_output: allRows.length },
+      null,
+      2
+    )
+  );
 
   res.json({
-    results,
+    results: resultSummary,
     total_rows: allRows.length,
     rows: allRows,
-    columns: ["Event plus Cat","Event","City","Date","Category","Gender","Gold","Time1","Silver","Time2","Bronze","Time3"]
+    columns: [
+      "Event plus Cat","Event","City","Date","Category","Gender",
+      "Gold","Time1","Silver","Time2","Bronze","Time3"
+    ]
   });
 });
 
-app.listen(PORT, () => console.log("✅ HYROX Masters Scraper Running on", PORT));
+// Last run summary
+app.get("/api/last-run", (_, res) => {
+  if (!fs.existsSync(LAST_RUN_FILE)) {
+    return res.json({ last_run: null, total_rows_output: 0 });
+  }
+  const data = JSON.parse(fs.readFileSync(LAST_RUN_FILE, "utf-8"));
+  res.json(data);
+});
+
+app.listen(PORT, () => console.log(`✅ HYROX Masters scraper running on :${PORT}`));
