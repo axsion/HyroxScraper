@@ -117,60 +117,45 @@ async function readEventsList() {
 // ---------------- CORE SCRAPER ----------------
 
 function parsePodiumFromTable($) {
-  // Try to detect columns by header labels; fallback to heuristics
-  const table = $("table.table-bordered.table-striped").first();
+  const table = $("table:has(tbody tr)").first();
   if (!table.length) return null;
 
-  const headers = table.find("thead th").map((i, el) => $(el).text().trim().toLowerCase()).get();
   const tbodyRows = table.find("tbody tr");
   if (!tbodyRows.length) return null;
 
-  // Indices
-  let idxRank = headers.findIndex(h => ["#", "rank", "pos"].includes(h));
-  if (idxRank === -1) idxRank = 0;
+  // given structure:
+  // td[0] = menu icon
+  // td[1] = bib number (ignore)
+  // td[2] = rank
+  // td[3] = name (contains flag img + <a>)
+  // td[4] = AG (we already know)
+  // td[5] = time
+  // td[6] = empty (ignore)
 
-  // Common header names for athlete and time
-  let idxName = headers.findIndex(h => h.includes("name") || h.includes("athlete") || h.includes("participant"));
-  let idxTime = headers.findIndex(h => h.includes("time") || h.includes("result"));
+  function cleanName(cell) {
+    // remove flag <img> and extract link text
+    const txt = $(cell).text().trim();
+    return txt.replace(/\s+/g, " ");
+  }
 
-  function extractOne(i) {
-    const row = tbodyRows.eq(i);
-    if (!row.length) return null;
-    const tds = row.find("td");
-    if (!tds.length) return null;
+  function extract(rowIndex) {
+    const tr = tbodyRows.eq(rowIndex);
+    if (!tr.length) return null;
+    const tds = tr.find("td");
+    if (tds.length < 6) return null;
 
-    const rank = tds.eq(idxRank).text().trim() || (i + 1).toString();
-
-    // Name
-    let name = idxName >= 0 ? tds.eq(idxName).text().trim() : "";
-    if (!name) {
-      // Fallback: pick the first non-rank, non-time cell as name
-      for (let k = 0; k < tds.length; k++) {
-        const txt = $(tds[k]).text().trim();
-        if (k === idxRank) continue;
-        if (isTimeLike(txt)) continue;
-        if (txt) { name = txt; break; }
-      }
-    }
-
-    // Time
-    let time = idxTime >= 0 ? tds.eq(idxTime).text().trim() : "";
-    if (!time || !isTimeLike(time)) {
-      // Fallback: scan cells for a time-like pattern
-      for (let k = 0; k < tds.length; k++) {
-        const txt = $(tds[k]).text().trim();
-        if (isTimeLike(txt)) { time = txt; break; }
-      }
-    }
+    let rank = tds.eq(2).text().trim();
+    let name = cleanName(tds.eq(3));
+    let time = tds.eq(5).text().trim();
 
     if (!name) return null;
-    return { rank, name, time: time || "" };
+    return { rank, name, time };
   }
 
   return {
-    gold: extractOne(0),
-    silver: extractOne(1),
-    bronze: extractOne(2),
+    gold: extract(0),
+    silver: extract(1),
+    bronze: extract(2),
   };
 }
 
