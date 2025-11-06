@@ -19,10 +19,15 @@ const EVENTS_FILE = path.join(__dirname, "events.txt");
 // Output cache (ok to be ephemeral on Fly / Render)
 const SHEET_FILE = path.join(__dirname, "masters.json");
 
-// Season-aware age groups (SOLO + DOUBLES)
+// Season-aware age groups (apply to BOTH SOLO & DOUBLES)
+// Note: for S7 we try BOTH the full masters set and the legacy wide set.
+// We'll attempt all candidates, keep the ones that return a podium, and dedupe.
 const AGE_GROUPS = {
-  s8: ["45-49","50-54","55-59","60-64","65-69","70-74","75-79"],
-  s7: ["40-49","50-59","60-69"],
+  s8: [["45-49","50-54","55-59","60-64","65-69","70-74","75-79"]],
+  s7: [
+    ["45-49","50-54","55-59","60-64","65-69","70-74","75-79"], // full masters variant (some S7 pages use this)
+    ["40-49","50-59","60-69"],                                // legacy wide variant
+  ],
 };
 
 // Event types (SOLO + DOUBLES)
@@ -115,7 +120,7 @@ async function readEventsList() {
   }
 }
 
-// ---------------- PODIUM PARSER (FINAL & CORRECT) ----------------
+// ---------------- PODIUM PARSER (MATCHES CURRENT HTML) ----------------
 
 function parsePodiumFromTable($) {
   const table = $("table:has(tbody tr)").first();
@@ -134,6 +139,8 @@ function parsePodiumFromTable($) {
     const tds = tr.find("td");
     if (tds.length < 6) return null;
 
+    // Observed structure:
+    // td[0] menu icon, td[1] bib, td[2] rank, td[3] name, td[4] AG, td[5] time, td[6] empty
     const rank = tds.eq(2).text().trim();
     const name = cleanName(tds.eq(3));
     const time = tds.eq(5).text().trim();
@@ -172,7 +179,7 @@ async function buildRow(slug, category, genderLabel, podium) {
     Time2: podium.silver?.time || "",
     Bronze: podium.bronze?.name || "",
     Time3: podium.bronze?.time || "",
-    _key: `${city}-${year}-${genderLabel}-${category}`
+    _key: `${city}-${year}-${genderLabel}-${category}`,
   };
 }
 
@@ -180,18 +187,21 @@ async function buildRow(slug, category, genderLabel, podium) {
 
 async function scrapeOneSlug(slug) {
   const out = [];
-  const season = getSeasonFromSlug(slug);
-  const ageGroups = AGE_GROUPS[season] || [];
+  const season = getSeasonFromSlug(slug); // "s8" or "s7"
+  const variants = AGE_GROUPS[season] || [[]]; // array of arrays
 
-  for (const ag of ageGroups) {
-    for (const evt of EVENT_TYPES) {
-      const url = `https://www.hyresult.com/ranking/${slug}-${evt.key}?ag=${encodeURIComponent(ag)}`;
-      const podium = await scrapeCategory(url);
-      if (!podium) continue;
-      const row = await buildRow(slug, ag, evt.label, podium);
-      out.push(row);
+  for (const ageList of variants) {
+    for (const ag of ageList) {
+      for (const evt of EVENT_TYPES) {
+        const url = `https://www.hyresult.com/ranking/${slug}-${evt.key}?ag=${encodeURIComponent(ag)}`;
+        const podium = await scrapeCategory(url);
+        if (!podium) continue;
+        const row = await buildRow(slug, ag, evt.label, podium);
+        out.push(row);
+      }
     }
   }
+
   return out;
 }
 
@@ -199,7 +209,9 @@ async function scrapeOneSlug(slug) {
 
 function dedupeRows(rows) {
   const map = new Map();
-  for (const r of rows) map.set(r._key, r);
+  for (const r of rows) {
+    if (r && r._key) map.set(r._key, r);
+  }
   return Array.from(map.values());
 }
 
@@ -214,23 +226,78 @@ async function updateOne(slug) {
 async function updateAll() {
   const slugs = await readEventsList();
   let added = 0;
-  for (const slug of slugs) added += await updateOne(slug);
+  for (const slug of slugs) {
+    added += await updateOne(slug);
+  }
   return added;
 }
 
 // ---------------- API ----------------
 
-app.use((req,res,next)=>{
-  res.setHeader("Access-Control-Allow-Origin","*");
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
   next();
 });
 
-app.get("/api/health",(req,res)=>res.json({ ok:true, cached:loadSheet().rows.length }));
-app.get("/api/check-events", async (req,res)=>res.json(await readEventsList()));
-app.get("/api/scrape", async (req,res)=>res.json({ ok:true, added: await updateOne(req.query.slug) }));
-app.get("/api/scrape-all", async (req,res)=>res.json({ ok:true, added: await updateAll() }));
-app.get("/api/masters",(req,res)=>res.json(loadSheet()));
+app.get("/api/health", (req, res) => {
+  const s = loadSheet();
+  res.json({
+    ok: true,
+    status: "healthy",
+    last_run: s.last_run || null,
+    cached_rows: (s.rows || []).length,
+    events_source: EVENTS_URL,
+  });
+});
 
-app.get("/", (_,res)=>res.send("HYROX Masters Scraper Running ✅"));
+app.get("/api/check-events", async (req, res) => {
+  try {
+    const slugs = await readEventsList();
+    res.json({ total: slugs.length, results: slugs, sample: slugs.slice(0, 5) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
-app.listen(PORT,()=>console.log(`✅ Running on ${PORT}`));
+app.get("/api/scrape", async (req, res) => {
+  try {
+    const slug = (req.query.slug || "").trim();
+    if (!slug) return res.status(400).json({ error: "Missing ?slug=" });
+    const added = await updateOne(slug);
+    // Return only rows for this slug for convenience
+    const { city, year } = parseEventSlug(slug);
+    const s = loadSheet();
+    const rows = (s.rows || []).filter(r => r.Event.startsWith(`${city} ${year} -`));
+    const cleaned = rows.map(({ _key, ...r }) => r);
+    res.json({ ok: true, slug, added, rows: cleaned });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/scrape-all", async (req, res) => {
+  try {
+    const added = await updateAll();
+    res.json({ ok: true, added });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/masters", (req, res) => {
+  const s = loadSheet();
+  const rows = (s.rows || []).map(({ _key, ...r }) => r);
+  res.json({
+    ok: true,
+    total_rows: rows.length,
+    rows,
+    columns: Object.keys(rows[0] || {}),
+    last_run: s.last_run || null,
+  });
+});
+
+app.get("/", (_, res) => {
+  res.send("HYROX Masters Scraper Running ✅");
+});
+
+app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
