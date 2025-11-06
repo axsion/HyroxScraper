@@ -19,7 +19,22 @@ const EVENTS_FILE = path.join(__dirname, "events.txt");
 // Output cache (ok to be ephemeral on Fly / Render)
 const SHEET_FILE = path.join(__dirname, "masters.json");
 
-// City mapping (for pretty display)
+// Season-aware age groups (SOLO + DOUBLES)
+const AGE_GROUPS = {
+  s8: ["45-49","50-54","55-59","60-64","65-69","70-74","75-79"],
+  s7: ["40-49","50-59","60-69"],
+};
+
+// Event types (SOLO + DOUBLES)
+const EVENT_TYPES = [
+  { key: "hyrox-men",           label: "MEN" },
+  { key: "hyrox-women",         label: "WOMEN" },
+  { key: "hyrox-doubles-men",   label: "DOUBLES MEN" },
+  { key: "hyrox-doubles-women", label: "DOUBLES WOMEN" },
+  { key: "hyrox-doubles-mixed", label: "DOUBLES MIXED" },
+];
+
+// City mapping for display
 const CITY_MAP = {
   "birmingham": "Birmingham",
   "paris": "Paris",
@@ -52,13 +67,7 @@ const CITY_MAP = {
   "berlin": "Berlin",
 };
 
-const AGE_GROUPS = ["45-49", "50-54", "55-59", "60-64", "65-69", "70-74"];
-const GENDERS = [
-  { key: "men", label: "MEN" },
-  { key: "women", label: "WOMEN" },
-];
-
-// ---------------- UTILS ----------------
+// ---------------- SHEET HELPERS ----------------
 
 function ensureSheet() {
   if (!fs.existsSync(SHEET_FILE)) {
@@ -73,48 +82,40 @@ function saveSheet(payload) {
   fs.writeFileSync(SHEET_FILE, JSON.stringify(payload, null, 2));
 }
 
+// ---------------- GENERAL HELPERS ----------------
+
 function parseEventSlug(slug) {
-  // e.g. "s8-2025-rome" → year="2025", cityKey="rome"
   const parts = slug.split("-");
-  const year = parts[1] || "";
+  const year = parts[1];
   const cityKey = parts.slice(2).join("-");
   const city = CITY_MAP[cityKey] || cityKey;
   return { city, year };
 }
 
 function formatEvent(city, year, gender) {
-  // Event (no category)
   return `${city} ${year} - ${gender}`;
 }
-function formatEventPlusCat(city, year, gender, category) {
-  // Unique key for row
-  return `${city} ${year} - ${gender} - ${category}`;
-}
 
-function isTimeLike(text) {
-  // matches 00:59:59 or 1:02:35 or 59:59 (handle missing hours occasionally)
-  return /^\d{1,2}:\d{2}(:\d{2})?$/.test(text.trim());
+function getSeasonFromSlug(slug) {
+  return slug.split("-")[0]; // "s8" or "s7"
 }
 
 async function readEventsList() {
   try {
-    const r = await fetch(EVENTS_URL, { timeout: 10000 });
-    if (!r.ok) throw new Error(`Remote events list HTTP ${r.status}`);
+    const r = await fetch(EVENTS_URL);
+    if (!r.ok) throw new Error();
     const body = await r.text();
     const slugs = body.split("\n").map(s => s.trim()).filter(Boolean);
-    if (slugs.length === 0) throw new Error("Remote events list empty");
     return slugs;
-  } catch (e) {
-    // Fallback to local events.txt
+  } catch {
     if (fs.existsSync(EVENTS_FILE)) {
-      const body = fs.readFileSync(EVENTS_FILE, "utf8");
-      return body.split("\n").map(s => s.trim()).filter(Boolean);
+      return fs.readFileSync(EVENTS_FILE, "utf8").split("\n").map(s => s.trim()).filter(Boolean);
     }
-    throw new Error(`No events list available: ${e.message}`);
+    throw new Error("No events list available");
   }
 }
 
-// ---------------- CORE SCRAPER ----------------
+// ---------------- PODIUM PARSER (FINAL & CORRECT) ----------------
 
 function parsePodiumFromTable($) {
   const table = $("table:has(tbody tr)").first();
@@ -123,30 +124,19 @@ function parsePodiumFromTable($) {
   const tbodyRows = table.find("tbody tr");
   if (!tbodyRows.length) return null;
 
-  // given structure:
-  // td[0] = menu icon
-  // td[1] = bib number (ignore)
-  // td[2] = rank
-  // td[3] = name (contains flag img + <a>)
-  // td[4] = AG (we already know)
-  // td[5] = time
-  // td[6] = empty (ignore)
-
   function cleanName(cell) {
-    // remove flag <img> and extract link text
-    const txt = $(cell).text().trim();
-    return txt.replace(/\s+/g, " ");
+    return $(cell).text().trim().replace(/\s+/g, " ");
   }
 
-  function extract(rowIndex) {
-    const tr = tbodyRows.eq(rowIndex);
+  function extract(i) {
+    const tr = tbodyRows.eq(i);
     if (!tr.length) return null;
     const tds = tr.find("td");
     if (tds.length < 6) return null;
 
-    let rank = tds.eq(2).text().trim();
-    let name = cleanName(tds.eq(3));
-    let time = tds.eq(5).text().trim();
+    const rank = tds.eq(2).text().trim();
+    const name = cleanName(tds.eq(3));
+    const time = tds.eq(5).text().trim();
 
     if (!name) return null;
     return { rank, name, time };
@@ -160,163 +150,87 @@ function parsePodiumFromTable($) {
 }
 
 async function scrapeCategory(url) {
-  const res = await fetch(url, { timeout: 20000 });
+  const res = await fetch(url);
   if (!res.ok) return null;
   const html = await res.text();
   const $ = cheerio.load(html);
   const podium = parsePodiumFromTable($);
-  if (!podium || !podium.gold) return null;
-  return podium;
+  return podium && podium.gold ? podium : null;
 }
 
-async function buildRowFromPodium(slug, category, genderLabel, podium) {
+async function buildRow(slug, category, genderLabel, podium) {
   const { city, year } = parseEventSlug(slug);
   return {
-    "Event": formatEvent(city, year, genderLabel),
-    "City": city,
-    "Date": year,
-    "Category": category,
-    "Gender": genderLabel,
-    "Gold": podium.gold?.name || "",
-    "Time1": podium.gold?.time || "",
-    "Silver": podium.silver?.name || "",
-    "Time2": podium.silver?.time || "",
-    "Bronze": podium.bronze?.name || "",
-    "Time3": podium.bronze?.time || "",
-    // internal unique key (not written to Sheets but useful for dedup)
-    "_key": formatEventPlusCat(city, year, genderLabel, category),
+    Event: formatEvent(city, year, genderLabel),
+    City: city,
+    Date: year,
+    Category: category,
+    Gender: genderLabel,
+    Gold: podium.gold?.name || "",
+    Time1: podium.gold?.time || "",
+    Silver: podium.silver?.name || "",
+    Time2: podium.silver?.time || "",
+    Bronze: podium.bronze?.name || "",
+    Time3: podium.bronze?.time || "",
+    _key: `${city}-${year}-${genderLabel}-${category}`
   };
 }
 
+// ---------------- SCRAPE ONE EVENT ----------------
+
 async function scrapeOneSlug(slug) {
   const out = [];
-  for (const ag of AGE_GROUPS) {
-    for (const g of GENDERS) {
-      const url = `https://www.hyresult.com/ranking/${slug}-hyrox-${g.key}?ag=${ag}`;
+  const season = getSeasonFromSlug(slug);
+  const ageGroups = AGE_GROUPS[season] || [];
+
+  for (const ag of ageGroups) {
+    for (const evt of EVENT_TYPES) {
+      const url = `https://www.hyresult.com/ranking/${slug}-${evt.key}?ag=${encodeURIComponent(ag)}`;
       const podium = await scrapeCategory(url);
       if (!podium) continue;
-      const row = await buildRowFromPodium(slug, ag, g.label, podium);
+      const row = await buildRow(slug, ag, evt.label, podium);
       out.push(row);
     }
   }
   return out;
 }
 
-// ---------------- UPDATE / CACHE ----------------
+// ---------------- MERGE & UPDATE CACHE ----------------
 
-function dedupeAndMerge(existingRows, newRows) {
-  // Remove any existing row with the same _key, then add the new one
+function dedupeRows(rows) {
   const map = new Map();
-  for (const r of existingRows) {
-    if (r && r._key) map.set(r._key, r);
-  }
-  for (const r of newRows) {
-    if (r && r._key) map.set(r._key, r);
-  }
+  for (const r of rows) map.set(r._key, r);
   return Array.from(map.values());
 }
 
-async function updateAll(slugs) {
-  const sheet = loadSheet();
-  let merged = sheet.rows || [];
-  let totalAdded = 0;
-
-  for (const slug of slugs) {
-    const rows = await scrapeOneSlug(slug);
-    merged = dedupeAndMerge(merged, rows);
-    totalAdded += rows.length;
-  }
-
-  saveSheet({ rows: merged, last_run: new Date().toISOString() });
-  return { added: totalAdded, total_rows: merged.length };
-}
-
 async function updateOne(slug) {
-  const sheet = loadSheet();
-  const rows = await scrapeOneSlug(slug);
-  const merged = dedupeAndMerge(sheet.rows || [], rows);
+  const cache = loadSheet();
+  const newRows = await scrapeOneSlug(slug);
+  const merged = dedupeRows([...(cache.rows || []), ...newRows]);
   saveSheet({ rows: merged, last_run: new Date().toISOString() });
-  return { added: rows.length, total_rows: merged.length, rows };
+  return newRows.length;
 }
 
-// ---------------- MIDDLEWARE ----------------
+async function updateAll() {
+  const slugs = await readEventsList();
+  let added = 0;
+  for (const slug of slugs) added += await updateOne(slug);
+  return added;
+}
 
-app.use((req, res, next) => {
-  // CORS for Google Apps Script
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  if (req.method === "OPTIONS") return res.status(200).end();
+// ---------------- API ----------------
+
+app.use((req,res,next)=>{
+  res.setHeader("Access-Control-Allow-Origin","*");
   next();
 });
 
-// ---------------- API ROUTES ----------------
+app.get("/api/health",(req,res)=>res.json({ ok:true, cached:loadSheet().rows.length }));
+app.get("/api/check-events", async (req,res)=>res.json(await readEventsList()));
+app.get("/api/scrape", async (req,res)=>res.json({ ok:true, added: await updateOne(req.query.slug) }));
+app.get("/api/scrape-all", async (req,res)=>res.json({ ok:true, added: await updateAll() }));
+app.get("/api/masters",(req,res)=>res.json(loadSheet()));
 
-app.get("/api/health", (req, res) => {
-  try {
-    const s = loadSheet();
-    res.json({
-      ok: true,
-      status: "healthy",
-      last_run: s.last_run || null,
-      cached_rows: (s.rows || []).length,
-      events_source: EVENTS_URL,
-    });
-  } catch {
-    res.json({ ok: true, status: "healthy", cached_rows: 0, events_source: EVENTS_URL });
-  }
-});
+app.get("/", (_,res)=>res.send("HYROX Masters Scraper Running ✅"));
 
-app.get("/api/check-events", async (req, res) => {
-  try {
-    const slugs = await readEventsList();
-    res.json({ total: slugs.length, results: slugs.slice(0, 50), sample: slugs.slice(0, 5) });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.get("/api/scrape", async (req, res) => {
-  // Scrape/update a single event by slug
-  try {
-    const slug = (req.query.slug || "").trim();
-    if (!slug) return res.status(400).json({ error: "Missing ?slug=" });
-    const result = await updateOne(slug);
-    // return only the rows for this slug (without _key)
-    const cleaned = (result.rows || []).map(({ _key, ...r }) => r);
-    res.json({ ok: true, slug, added: result.added, rows: cleaned });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.get("/api/scrape-all", async (req, res) => {
-  try {
-    const slugs = await readEventsList();
-    const result = await updateAll(slugs);
-    res.json({ ok: true, ...result });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.get("/api/masters", (req, res) => {
-  const s = loadSheet();
-  // Strip internal key
-  const rows = (s.rows || []).map(({ _key, ...r }) => r);
-  res.json({
-    ok: true,
-    total_rows: rows.length,
-    rows,
-    columns: Object.keys(rows[0] || {}),
-    last_run: s.last_run || null,
-  });
-});
-
-app.get("/", (_, res) => {
-  res.send("HYROX Masters Scraper Running ✅");
-});
-
-// ---------------- START ----------------
-
-app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+app.listen(PORT,()=>console.log(`✅ Running on ${PORT}`));
