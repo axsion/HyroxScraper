@@ -1,3 +1,5 @@
+s8-2025-atlanta
+s8-2025-stuttgart
 s8-2025-birmingham
 s8-2025-paris
 s8-2025-valencia
